@@ -1,0 +1,659 @@
+/* meal_planner/static/style.css */
+
+/* --- Base & General Styles --- */
+body {
+    font-family: sans-serif;
+    margin: 0;
+    padding: 0;
+    background-color: #f8f9fa;
+    color: #333;
+    line-height: 1.5; /* Added for better readability */
+}
+
+.container {
+    max-width: 1200px;
+    margin: 20px auto;
+    padding: 0 20px;
+}
+
+nav {
+    background-color: #e9ecef;
+    padding: 10px 20px;
+    margin-bottom: 20px;
+    border-radius: 5px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+nav a {
+    margin-right: 15px;
+    text-decoration: none;
+    color: #007bff;
+    font-weight: 500;
+}
+
+nav a:hover {
+    color: #0056b3;
+    text-decoration: underline;
+}
+
+h2, h3 {
+    color: #495057;
+    margin-top: 1.2em; /* Adjusted margins */
+    margin-bottom: 0.8em;
+}
+h4 {
+    color: #6c757d;
+    margin-top: 1.5em;
+    margin-bottom: 0.5em;
+    border-bottom: 1px solid #dee2e6;
+    padding-bottom: 5px;
+}
+a {
+    color: #007bff;
+    text-decoration: none; /* Ensure links aren't underlined by default */
+}
+a:hover {
+    color: #0056b3;
+    text-decoration: underline;
+}
+label {
+    display: block;
+    margin-bottom: 5px;
+    font-weight: bold;
+}
+input[type=text],
+input[type=url],
+input[type=number],
+textarea,
+select {
+    width: 100%;
+    padding: 8px 10px;
+    margin-bottom: 10px;
+    border: 1px solid #ced4da;
+    border-radius: 4px;
+    box-sizing: border-box; /* Include padding in width */
+    font-size: 1rem;
+    line-height: 1.4; /* Ensure text isn't cramped */
+}
+textarea {
+    min-height: 100px;
+    vertical-align: top; /* Align text properly */
+}
+button, input[type=submit], .button-link {
+    padding: 10px 15px;
+    background-color: #007bff;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 1rem;
+    text-decoration: none;
+    display: inline-block;
+    line-height: 1; /* Align text vertically */
+    vertical-align: middle; /* Align with other inline elements */
+}
+button:hover, input[type=submit]:hover, .button-link:hover {
+    background-color: #0056b3;
+}
+.button-link { /* Style links to look like secondary buttons */
+    background-color: #6c757d;
+    margin-left: 10px;
+}
+.button-link:hover {
+    background-color: #5a6268;
+}
+.delete-button {
+    background-color: #dc3545;
+    color: white;
+    font-size: 0.8em;
+    padding: 3px 6px;
+    border: none;
+    border-radius: 3px;
+    cursor: pointer;
+    margin-left: 5px;
+    line-height: 1;
+    vertical-align: middle;
+}
+.delete-button:hover {
+    background-color: #c82333;
+}
+.delete-button-small {
+    background-color: #dc3545;
+    color: white;
+    font-size: 0.75em;
+    padding: 2px 5px;
+    border: none;
+    border-radius: 3px;
+    cursor: pointer;
+    line-height: 1;
+    vertical-align: middle;
+}
+.delete-button-small:hover {
+    background-color: #c82333;
+}
+label.checkbox-label { /* For inline checkboxes */
+    display: inline-block !important; /* Override label default */
+    margin-right: 15px;
+    font-weight: normal !important;
+    margin-bottom: 10px; /* Add spacing below checkbox line */
+}
+input[type=checkbox] {
+    margin-right: 5px;
+    vertical-align: middle; /* Align checkbox with label text */
+}
+
+.card {
+    background-color: #fff;
+    border: 1px solid #e0e0e0;
+    border-radius: 5px;
+    padding: 20px;
+    margin-bottom: 20px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+}
+
+/* --- Flash Messages --- */
+.flash-messages { margin-bottom: 20px; }
+.flash-message { padding: 12px 15px; margin-bottom: 10px; border-radius: 4px; border: 1px solid transparent; }
+.flash-success { background-color: #d4edda; color: #155724; border-color: #c3e6cb; }
+.flash-danger { background-color: #f8d7da; color: #721c24; border-color: #f5c6cb; }
+.flash-warning { background-color: #fff3cd; color: #856404; border-color: #ffeeba; }
+.flash-info { background-color: #d1ecf1; color: #0c5460; border-color: #bee5eb; }
+
+
+/* --- Dashboard / Meal Plan Table --- */
+.plan-controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.plan-controls label { margin-bottom: 0; }
+.plan-controls input[type=number] { width: 60px; margin-bottom: 0; }
+.plan-controls button { margin-left: 10px; } /* Adjusted margin */
+
+.meal-plan-table-container { overflow-x: auto; } /* Allow horizontal scroll on small screens */
+table { width: 100%; border-collapse: collapse; margin-bottom: 20px; table-layout: fixed; background-color: #fff; } /* White background */
+th, td { border: 1px solid #ddd; padding: 10px; text-align: left; vertical-align: top; word-wrap: break-word; } /* Break long words */
+th { background-color: #f2f2f2; font-weight: bold; }
+.meal-slot { min-height: 150px; position: relative; }
+.meal-slot-content { margin-bottom: 5px; }
+.meal-slot h4 { margin-top: 0; margin-bottom: 5px; font-size: 1.1em;}
+.meal-slot p { font-size: 0.9em; margin: 3px 0; }
+.meal-slot i { color: #6c757d; }
+.meal-slot small { font-size: 0.8em; color: #6c757d; }
+
+/* Status Indicators */
+.meal-status-new { border-left: 5px solid #17a2b8; } /* Info */
+.meal-status-leftover { border-left: 5px solid #fd7e14; } /* Orange */
+.meal-status-locked { border-left: 5px solid #28a745; } /* Success */
+.meal-status-empty { border-left: 5px solid #ced4da; background-color: #f8f9fa; } /* Light */
+.meal-status-deleted { border-left: 5px solid #dc3545; background-color: #f8d7da; } /* Danger */
+.meal-manual-entry { background-color: #fff3cd; } /* Warning background for manual */
+.meal-manual-control { background-color: #e2e6ea; } /* Indicate cell is manually controlled */
+
+/* Recipe Links/Buttons in Slot */
+.recipe-link { font-size: 0.85em; margin-right: 8px; }
+.delete-recipe-form { display: inline-block; margin-top: 5px; }
+
+/* Lock Controls */
+.lock-control { margin-top: 10px; font-size: 0.9em; }
+/* label already handled by .checkbox-label */
+
+/* Manual Entry Controls */
+.manual-entry-controls { margin-top: 15px; border-top: 1px dashed #ccc; padding-top: 10px; }
+.manual-entry-controls select { margin-bottom: 5px; font-size: 0.9em; }
+.manual-entry-controls input[type=text] { font-size: 0.9em; }
+
+
+/* --- Add/Edit Recipe Form --- */
+.scrape-section { margin-bottom: 25px; } /* Keep class for consistency if added back */
+.ingredients-section { border: 1px solid #ccc; padding: 15px; margin-bottom: 15px; border-radius: 4px; }
+.ingredients-section legend { font-weight: bold; padding: 0 10px; width: auto; /* Fix legend width */ }
+
+/* Dynamic rows (Edit Form) */
+.ingredient-row { display: flex; gap: 10px; margin-bottom: 10px; align-items: center; }
+.ingredient-row input[type=text] { margin-bottom: 0; flex-grow: 1; }
+.ingredient-row input[name$="[name]"] { flex-basis: 35%; min-width: 150px; } /* Min width helps */
+.ingredient-row input[name$="[qty]"] { flex-basis: 15%; min-width: 50px; }
+.ingredient-row input[name$="[unit]"] { flex-basis: 15%; min-width: 80px; }
+.ingredient-row input[name$="[aisle]"] { flex-basis: 25%; min-width: 100px; }
+.ingredient-row .remove-ingredient { /* Target button inside row */
+    background-color: #ffc107;
+    color: #333;
+    padding: 5px 8px;
+    font-size: 0.8em;
+    border: none;
+    border-radius: 3px;
+    flex-shrink: 0; /* Prevent button shrinking */
+    line-height: 1;
+}
+.ingredient-row .remove-ingredient:hover { background-color: #e0a800; }
+
+/* Textarea (Add Form) */
+.ingredient-format { font-size: 0.9em; color: #666; margin-bottom: 10px; padding: 8px; background-color: #f8f9fa; border-radius: 4px; }
+
+#add-ingredient { background-color: #28a745; margin-top: 10px; }
+#add-ingredient:hover { background-color: #218838; }
+
+
+/* --- Shopping List --- */
+.shopping-list-container, .removed-items-container, .add-custom-item, .pantry-preview { margin-top: 20px; }
+
+.shopping-list-aisle {
+    list-style: none;
+    padding-left: 0;
+    margin-bottom: 1.5em; /* Space between aisles */
+}
+
+.shopping-list-item {
+    padding: 8px 5px;
+    border-bottom: 1px solid #eee;
+    display: flex; /* Use flexbox */
+    align-items: center; /* Align items vertically */
+    gap: 10px; /* Space between checkbox, label, button */
+    flex-wrap: nowrap; /* Prevent main items wrapping */
+}
+.shopping-list-item:last-child { border-bottom: none; }
+
+.shopping-list-item .item-checkbox {
+    flex-shrink: 0; /* Keep checkbox size */
+    margin: 0;
+    cursor: pointer; /* Indicate clickable */
+}
+
+.shopping-list-item .item-label {
+    flex-grow: 1; /* Take available space */
+    display: flex !important;
+    align-items: center;
+    flex-wrap: wrap; /* Allow content within label to wrap */
+    gap: 8px;
+    cursor: pointer;
+    font-weight: normal;
+    margin: 0;
+    padding: 0;
+}
+
+.shopping-list-item .item-name {
+    font-weight: 500;
+    margin: 0;
+}
+.shopping-list-item .item-qty {
+    font-size: 0.9em;
+    color: #555;
+    margin: 0;
+    white-space: nowrap; /* Prevent qty wrap */
+}
+.shopping-list-item .recipe-source {
+    font-size: 0.8em;
+    color: #777;
+    margin-left: auto; /* Push to right */
+    padding-left: 10px;
+    flex-shrink: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 200px; /* Limit width */
+}
+.pantry-indicator {
+    font-size: 0.8em;
+    color: #fd7e14;
+    font-weight: bold;
+    white-space: nowrap;
+    flex-shrink: 0; /* Don't shrink */
+}
+.shopping-list-item.in-pantry .item-name {
+    color: #fd7e14; /* Highlight items maybe in pantry */
+}
+
+/* Checked items styling */
+.shopping-list-item.checked .item-label {
+    text-decoration: line-through;
+    color: #999;
+}
+.shopping-list-item.checked .item-name,
+.shopping-list-item.checked .item-qty {
+    color: #999; /* Ensure inner spans also grey out */
+}
+
+/* Remove Button Styling (inline) */
+.shopping-list-item .remove-button {
+    flex-shrink: 0;
+    background-color: #6c757d; /* Secondary button color */
+    color: white;
+    font-size: 0.8em;
+    padding: 4px 8px;
+    border: none;
+    border-radius: 3px;
+    cursor: pointer;
+    margin: 0;
+    line-height: 1;
+    vertical-align: middle; /* Align with checkbox/text */
+}
+.shopping-list-item .remove-button:hover { background-color: #5a6268; }
+
+/* Custom Items */
+.custom-item .item-label small { margin-left: 5px; color: #666; }
+
+
+/* Removed Items List */
+.removed-items-container ul { list-style: none; padding-left: 0; }
+.removed-items-container li {
+    padding: 5px 0;
+    border-bottom: 1px dashed #ccc;
+    display: flex;
+    align-items: center;
+    justify-content: space-between; /* Space out name and button */
+    color: #777; /* Dim removed items */
+}
+.removed-items-container li:last-child { border-bottom: none; }
+.removed-items-container .item-qty { font-size: 0.9em; margin-left: 8px; }
+.removed-items-container small { font-size: 0.9em; color: #888; margin-left: 8px; }
+.removed-items-container .readd-button {
+    background-color: #17a2b8; /* Info color */
+    color: white;
+    font-size: 0.8em;
+    padding: 3px 6px;
+    border: none;
+    border-radius: 3px;
+    cursor: pointer;
+    flex-shrink: 0;
+    line-height: 1;
+}
+.removed-items-container .readd-button:hover { background-color: #138496; }
+
+
+/* Add Custom Item Form */
+.add-custom-item input[type=text] {
+    display: inline-block;
+    width: auto; /* Don't take full width */
+    margin-right: 10px;
+    margin-bottom: 0; /* Align with button */
+    vertical-align: middle;
+}
+.add-custom-item button {
+    vertical-align: middle;
+}
+
+/* Pantry Preview */
+.pantry-preview ul { list-style: none; padding-left: 0; margin-top: 5px; }
+.pantry-preview li { font-size: 0.9em; color: #666; margin-bottom: 3px; }
+.pantry-preview a { display: block; margin-top: 10px; font-size: 0.9em; }
+
+
+/* --- Cupboard Page --- */
+.cupboard-management { margin-bottom: 30px; }
+.cupboard-add-form input[type=text] {
+    display: inline-block; /* Layout inline */
+    width: auto; /* Auto width */
+    margin-right: 10px;
+    margin-bottom: 5px; /* Allow wrap */
+    vertical-align: middle;
+}
+.cupboard-add-form button {
+    vertical-align: middle;
+}
+
+.cupboard-list ul {
+    list-style: none;
+    padding-left: 0;
+}
+.cupboard-list li {
+    margin-bottom: 8px;
+    padding: 5px 0;
+    border-bottom: 1px solid #eee;
+    display: flex; /* Align name and button */
+    justify-content: space-between;
+    align-items: center;
+}
+.cupboard-list li:last-child { border-bottom: none; }
+.cupboard-list form { display: inline; margin: 0; } /* Ensure form doesn't add spacing */
+
+
+
+
+
+
+
+/* Inline Checkboxes (Add/Edit Recipe) */
+.checkbox-group { margin-bottom: 15px; }
+.checkbox-group > label { margin-bottom: 8px; } /* Label for the group */
+.checkbox-inline-options { display: flex; flex-wrap: wrap; gap: 15px; align-items: center; }
+.checkbox-inline-options .checkbox-label { /* Label next to checkbox */
+    display: inline-block !important;
+    margin: 0 !important; /* Reset margins */
+    font-weight: normal !important;
+    cursor: pointer;
+}
+.checkbox-inline-options input[type=checkbox] {
+    margin: 0; /* Reset margins */
+    cursor: pointer;
+    width: auto; /* Override default width */
+}
+
+/* Default Locked Breakfast Indicator */
+.default-locked {
+    background-color: #e6f4ea; /* Light green background */
+    /* border-left-color: #8fd19e; /* Optional different border color */
+}
+
+/* Dashboard Recipe Links */
+.recipe-links { margin-top: 5px; margin-bottom: 8px; font-size: 0.9em; }
+.recipe-links a { margin-right: 10px; }
+
+/* Manual Text Input */
+.manual-text-input { width: 95%; /* Slightly less than 100% */ }
+
+/* Aisle Management Table */
+.aisle-update-form { display: flex; gap: 5px; align-items: center; }
+.aisle-update-form input[type=text] { width: auto; flex-grow: 1; margin-bottom: 0; }
+.aisle-update-form button { flex-shrink: 0; padding: 5px 10px; font-size: 0.9em;}
+#manage-aisles-table { margin-top: 15px; width: 100%; }
+#manage-aisles-table th, #manage-aisles-table td { padding: 8px 12px; text-align: left; vertical-align: middle;}
+#manage-aisles-table th:nth-child(1), #manage-aisles-table td:nth-child(1) { width: 40%; }
+#manage-aisles-table th:nth-child(2), #manage-aisles-table td:nth-child(2) { width: 30%; }
+#manage-aisles-table th:nth-child(3), #manage-aisles-table td:nth-child(3) { width: 30%; }
+
+/* Removed Items List Button Alignment */
+.removed-items-container li {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+.removed-items-container .readd-button {
+    flex-shrink: 0; /* Prevent button shrinking */
+    margin-left: 10px; /* Add space */
+}
+
+/* Ensure shopping list item label contents align well */
+.shopping-list-item .item-label {
+    align-items: baseline; /* Align text baselines */
+}
+
+/* Hide removed items container if it's empty */
+.removed-items-container:empty {
+    display: none;
+}
+/* Or more specifically, if the UL inside is empty */
+.removed-items-container ul:empty {
+     /* No reliable CSS selector for this, handled by JS or server-side conditional rendering */
+}
+
+/* --- Lock Types and Indicators --- */
+.lock-info {
+    margin-bottom: 20px;
+}
+
+.lock-types-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    gap: 20px;
+}
+
+.lock-types-list li {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.lock-indicator {
+    width: 16px;
+    height: 16px;
+    border-radius: 3px;
+    display: inline-block;
+}
+
+.lock-indicator.manual-lock {
+    background-color: #ffc107;
+    border: 1px solid #d39e00;
+}
+
+.lock-indicator.user-lock {
+    background-color: #28a745;
+    border: 1px solid #1e7e34;
+}
+
+.lock-indicator.default-lock {
+    background-color: #17a2b8;
+    border: 1px solid #117a8b;
+}
+
+/* Lock States in Meal Slots */
+.meal-locked-manual {
+    background-color: #fff3cd;
+    border-left: 5px solid #ffc107;
+}
+
+.meal-locked-user {
+    background-color: #d4edda;
+    border-left: 5px solid #28a745;
+}
+
+.meal-locked-default {
+    background-color: #d1ecf1;
+    border-left: 5px solid #17a2b8;
+}
+
+/* Lock Controls */
+.lock-control {
+    margin-top: 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.lock-checkbox {
+    margin: 0;
+}
+
+.lock-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.9em;
+    cursor: pointer;
+}
+
+.lock-badge {
+    font-size: 0.8em;
+    padding: 2px 6px;
+    border-radius: 3px;
+    background-color: #6c757d;
+    color: white;
+}
+
+.lock-type-manual .lock-badge {
+    background-color: #ffc107;
+    color: #000;
+}
+
+.lock-type-user .lock-badge {
+    background-color: #28a745;
+}
+
+.lock-type-default .lock-badge {
+    background-color: #17a2b8;
+}
+
+/* Manual Entry Controls */
+.manual-entry-controls {
+    margin-top: 15px;
+    border-top: 1px dashed #ccc;
+    padding-top: 10px;
+}
+
+.manual-select {
+    width: 100%;
+    padding: 6px;
+    border: 1px solid #ced4da;
+    border-radius: 4px;
+    font-size: 0.9em;
+    margin-bottom: 5px;
+}
+
+.manual-text-input {
+    width: 100%;
+    padding: 6px;
+    border: 1px solid #ced4da;
+    border-radius: 4px;
+    font-size: 0.9em;
+}
+
+/* Improved Meal Slot Styling */
+.meal-slot {
+    min-height: 150px;
+    position: relative;
+    transition: background-color 0.2s ease;
+}
+
+.meal-slot-content {
+    margin-bottom: 5px;
+}
+
+.meal-slot h4 {
+    margin-top: 0;
+    margin-bottom: 5px;
+    font-size: 1.1em;
+    color: #2c3e50;
+}
+
+.meal-slot p {
+    font-size: 0.9em;
+    margin: 3px 0;
+    color: #495057;
+}
+
+.meal-slot i {
+    color: #6c757d;
+}
+
+.meal-slot small {
+    font-size: 0.8em;
+    color: #6c757d;
+}
+
+/* Status Indicators */
+.meal-status-new {
+    border-left: 5px solid #17a2b8;
+}
+
+.meal-status-leftover {
+    border-left: 5px solid #fd7e14;
+}
+
+.meal-status-locked {
+    border-left: 5px solid #28a745;
+}
+
+.meal-status-empty {
+    border-left: 5px solid #ced4da;
+    background-color: #f8f9fa;
+}
+
+.meal-status-deleted {
+    border-left: 5px solid #dc3545;
+    background-color: #f8d7da;
+}
+
+/* --- Utility Class --- */
+.hidden { display: none !important; }
