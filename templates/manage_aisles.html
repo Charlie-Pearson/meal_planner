@@ -12,42 +12,174 @@
 <div class="card">
     <h3>Update Aisles</h3>
     {% if ingredients %}
-    <form method="POST" action="{{ url_for('manage_aisles') }}" id="manage-aisles-form">
-        <button type="submit" class="update-all-aisles-btn">Update All Changed Aisles</button>
-        <table id="manage-aisles-table">
-            <thead><tr><th>Ingredient Name</th><th>Current Aisle</th><th>New Aisle</th></tr></thead>
-            <tbody>
-                {% for ingredient in ingredients %}
-                <tr>
-                    <td>{{ ingredient.name }}</td>
-                    <td>{{ ingredient.aisle if ingredient.aisle else 'Unknown' }}</td>
-                    <td>
-                        {# Store original aisle in hidden input for comparison on backend #}
-                        <input type="hidden" name="original_aisle_{{ ingredient.name }}" value="{{ ingredient.aisle if ingredient.aisle else 'None' }}">
-                        {# Input name includes ingredient name for backend parsing #}
-                        <input type="text" name="aisle_{{ ingredient.name }}" placeholder="Leave blank for 'Unknown'" value="{{ ingredient.aisle if ingredient.aisle else '' }}" list="aisle-suggestions" class="aisle-input">
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-        <button type="submit" class="update-all-aisles-btn" style="margin-top: 15px;">Update All Changed Aisles</button>
+    <form method="POST" action="{{ url_for('manage_aisles') }}" id="manage-aisles-form" class="needs-validation" novalidate>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <div class="form-actions mb-3">
+            <button type="submit" class="btn btn-success update-all-aisles-btn">
+                <i class="fas fa-save me-2"></i>Update All Changed Aisles
+            </button>
+            <button type="button" class="btn btn-outline-secondary ms-2" id="reset-form">
+                <i class="fas fa-undo me-2"></i>Reset Changes
+            </button>
+        </div>
+        <div class="table-responsive">
+            <table id="manage-aisles-table" class="table table-hover">
+                <thead>
+                    <tr>
+                        <th>Ingredient Name</th>
+                        <th>Current Aisle</th>
+                        <th>New Aisle</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for ingredient in ingredients %}
+                    <tr>
+                        <td>{{ ingredient.name }}</td>
+                        <td>{{ ingredient.aisle if ingredient.aisle else 'Unknown' }}</td>
+                        <td>
+                            <input type="hidden" name="original_aisle_{{ ingredient.name }}" value="{{ ingredient.aisle if ingredient.aisle else 'None' }}">
+                            <input type="text" 
+                                   name="aisle_{{ ingredient.name }}" 
+                                   placeholder="Leave blank for 'Unknown'" 
+                                   value="{{ ingredient.aisle if ingredient.aisle else '' }}" 
+                                   list="aisle-suggestions" 
+                                   class="form-control aisle-input"
+                                   data-original-value="{{ ingredient.aisle if ingredient.aisle else '' }}">
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        <div class="form-actions mt-3">
+            <button type="submit" class="btn btn-success update-all-aisles-btn">
+                <i class="fas fa-save me-2"></i>Update All Changed Aisles
+            </button>
+            <button type="button" class="btn btn-outline-secondary ms-2" id="reset-form-bottom">
+                <i class="fas fa-undo me-2"></i>Reset Changes
+            </button>
+        </div>
     </form>
-    {% else %}<p>No ingredients found in recipes yet.</p>{% endif %}
+    {% else %}
+    <div class="alert alert-info">
+        <i class="fas fa-info-circle me-2"></i>No ingredients found in recipes yet.
+    </div>
+    {% endif %}
 </div>
 {% endblock %}
 
 {% block styles_extra %}
 <style>
-    .aisle-update-form input[type=text] { width: auto; flex-grow: 1; margin-bottom: 0; } /* Applied via class now */
-    .aisle-input { width: 100%; margin-bottom: 0 !important; } /* Ensure input takes cell width */
-    .update-all-aisles-btn { background-color: #28a745; } /* Green button */
-    .update-all-aisles-btn:hover { background-color: #218838; }
-    #manage-aisles-table{margin-top:15px;width:100%;border-collapse:collapse;}
-    #manage-aisles-table th,#manage-aisles-table td{padding:8px 12px;border:1px solid #ddd;text-align:left;vertical-align:middle;}
-    #manage-aisles-table th{background-color:#f2f2f2;}
-    #manage-aisles-table th:nth-child(1),#manage-aisles-table td:nth-child(1){width:40%;}
-    #manage-aisles-table th:nth-child(2),#manage-aisles-table td:nth-child(2){width:30%;}
-    #manage-aisles-table th:nth-child(3),#manage-aisles-table td:nth-child(3){width:30%;}
+    .aisle-input {
+        width: 100%;
+        margin-bottom: 0 !important;
+    }
+    .update-all-aisles-btn {
+        background-color: #28a745;
+    }
+    .update-all-aisles-btn:hover {
+        background-color: #218838;
+    }
+    #manage-aisles-table {
+        margin-top: 15px;
+        width: 100%;
+    }
+    #manage-aisles-table th,
+    #manage-aisles-table td {
+        padding: 8px 12px;
+        text-align: left;
+        vertical-align: middle;
+    }
+    #manage-aisles-table th:nth-child(1),
+    #manage-aisles-table td:nth-child(1) {
+        width: 40%;
+    }
+    #manage-aisles-table th:nth-child(2),
+    #manage-aisles-table td:nth-child(2) {
+        width: 30%;
+    }
+    #manage-aisles-table th:nth-child(3),
+    #manage-aisles-table td:nth-child(3) {
+        width: 30%;
+    }
+    .form-actions {
+        display: flex;
+        justify-content: flex-end;
+        align-items: center;
+    }
+    .aisle-input.changed {
+        background-color: #e6f4ea;
+        border-color: #28a745;
+    }
 </style>
+{% endblock %}
+
+{% block scripts_extra %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const form = document.getElementById('manage-aisles-form');
+    const resetButtons = document.querySelectorAll('#reset-form, #reset-form-bottom');
+    const aisleInputs = document.querySelectorAll('.aisle-input');
+
+    // Track changes to aisle inputs
+    aisleInputs.forEach(input => {
+        input.addEventListener('input', function() {
+            const originalValue = this.getAttribute('data-original-value');
+            if (this.value !== originalValue) {
+                this.classList.add('changed');
+            } else {
+                this.classList.remove('changed');
+            }
+        });
+    });
+
+    // Reset form changes
+    resetButtons.forEach(button => {
+        button.addEventListener('click', function() {
+            aisleInputs.forEach(input => {
+                input.value = input.getAttribute('data-original-value');
+                input.classList.remove('changed');
+            });
+        });
+    });
+
+    // Form validation
+    form.addEventListener('submit', function(event) {
+        if (!form.checkValidity()) {
+            event.preventDefault();
+            event.stopPropagation();
+        }
+        form.classList.add('was-validated');
+    });
+
+    // Add sorting functionality
+    const table = document.getElementById('manage-aisles-table');
+    const headers = table.querySelectorAll('th');
+    
+    headers.forEach((header, index) => {
+        header.style.cursor = 'pointer';
+        header.addEventListener('click', () => {
+            const tbody = table.querySelector('tbody');
+            const rows = Array.from(tbody.querySelectorAll('tr'));
+            const isAsc = header.classList.contains('asc');
+            
+            // Remove sort classes from all headers
+            headers.forEach(h => h.classList.remove('asc', 'desc'));
+            
+            // Add sort class to clicked header
+            header.classList.add(isAsc ? 'desc' : 'asc');
+            
+            // Sort rows
+            rows.sort((a, b) => {
+                const aValue = a.cells[index].textContent.trim();
+                const bValue = b.cells[index].textContent.trim();
+                return isAsc ? bValue.localeCompare(aValue) : aValue.localeCompare(bValue);
+            });
+            
+            // Reorder rows
+            rows.forEach(row => tbody.appendChild(row));
+        });
+    });
+});
+</script>
 {% endblock %}

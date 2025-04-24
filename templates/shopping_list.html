@@ -1,258 +1,220 @@
 <!-- meal_planner/templates/shopping_list.html -->
 {% extends 'base.html' %}
 {% block title %}Shopping List{% endblock %}
+
 {% block content %}
-<h2>Shopping List</h2>
-
-{# Non-submitting container for dynamic list manipulation #}
-<div id="shopping-list-dynamic-container">
-    {% if shopping_list %}
-    <div class="shopping-list-container card">
-        <h3>Items Needed</h3>
-        {% for aisle, items in shopping_list.items() %}
-            <div class="aisle-section" id="aisle-section-{{ aisle|replace(' ', '_')|replace('/','_') }}"> {# Wrap H4 and UL #}
-                <h4>{{ aisle }}</h4>
-                <ul class="shopping-list-aisle" id="aisle-ul-{{ aisle|replace(' ', '_')|replace('/','_') }}">
-                    {% for item in items %}
-                    <li class="shopping-list-item {% if item.in_pantry %}in-pantry{% endif %}"
-                        data-norm-name="{{ item.normalized_name }}" data-name="{{ item.name }}" data-aisle="{{ item.aisle }}"
-                        data-display-quantity="{{ item.display_quantity }}" data-unit="{{ item.unit or '' }}"
-                        {% if item.is_custom %}data-is-custom="true" data-custom-index="{{ item.custom_item_index }}"{% endif %}>
-                        <input type="checkbox" id="check_{{ item.normalized_name|replace(' ', '_') }}{{ '_custom' if item.is_custom else '' }}" class="item-checkbox" onchange="handleItemCheck(this)">
-                        <label for="check_{{ item.normalized_name|replace(' ', '_') }}{{ '_custom' if item.is_custom else '' }}" class="item-label">
-                            <span class="item-name">{{ item.name }}</span><span class="item-qty">{% if item.display_quantity %} ({{ item.display_quantity }}{% if item.unit %} {{ item.unit }}{% endif %}){% elif item.needs_check %} (Check recipes){% endif %}</span>
-                            {% if item.in_pantry %}<span class="pantry-indicator" title="In Cupboard: {{ item.pantry_available }}">(In Cupboard{% if item.pantry_deducted %} - {{item.pantry_deducted}} {{item.unit}} deducted{% endif %})</span>{% endif %}
-                            {% if not item.is_custom and item.recipes %}<small class="recipe-source">(From: {{ item.recipes | join(', ') }})</small>{% endif %}
-                        </label>
-                    </li>
+<div class="container mt-4">
+    <h1>Shopping List</h1>
+    
+    <!-- Add Item Form -->
+    <div class="card mb-4">
+        <div class="card-header">
+            <h5 class="mb-0">Add Item</h5>
+        </div>
+        <div class="card-body">
+            <form action="{{ url_for('add_shopping_item') }}" method="POST">
+                <div class="row">
+                    <div class="col-md-4">
+                        <div class="form-group">
+                            <label for="name">Item Name</label>
+                            <input type="text" class="form-control" id="name" name="name" required>
+                        </div>
+                    </div>
+                    <div class="col-md-2">
+                        <div class="form-group">
+                            <label for="quantity">Quantity</label>
+                            <input type="number" class="form-control" id="quantity" name="quantity" step="0.1">
+                        </div>
+                    </div>
+                    <div class="col-md-2">
+                        <div class="form-group">
+                            <label for="unit">Unit</label>
+                            <input type="text" class="form-control" id="unit" name="unit">
+                        </div>
+                    </div>
+                    <div class="col-md-2">
+                        <div class="form-group">
+                            <label for="aisle">Aisle</label>
+                            <select class="form-control" id="aisle" name="aisle">
+                                <option value="">Other</option>
+                                {% for aisle in aisles %}
+                                <option value="{{ aisle }}">{{ aisle }}</option>
                     {% endfor %}
-                </ul>
-            </div> {# End aisle-section #}
-        {% endfor %}
-         <p style="margin-top:15px; font-size:0.9em; color:#555;">Checking an item moves it to the 'Removed Items' list below.</p>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="col-md-2">
+                        <div class="form-group">
+                            <label>&nbsp;</label>
+                            <button type="submit" class="btn btn-primary form-control">Add Item</button>
+                        </div>
+                    </div>
+                </div>
+            </form>
+        </div>
     </div>
-    {% else %}
-        <p id="empty-list-message">Shopping list is empty.</p>
+
+    <!-- Quick Actions -->
+    <div class="mb-4">
+        <a href="{{ url_for('cupboard') }}" class="btn btn-outline-primary">View Cupboard</a>
+    </div>
+
+    <!-- Shopping List -->
+    <div id="shopping-list-container">
+        {% if items_by_aisle %}
+            {% for aisle, items in items_by_aisle.items() %}
+            <div class="card mb-3">
+                <div class="card-header">
+                    <h5 class="mb-0">{{ aisle }}</h5>
+                </div>
+                <div class="card-body">
+                    <ul class="list-group">
+                        {% for item in items %}
+                        <li class="list-group-item d-flex justify-content-between align-items-center">
+                            <div class="form-check">
+                                <input class="form-check-input item-checkbox" type="checkbox" 
+                                       data-item-id="{{ item.id }}" 
+                                       {% if item.is_checked %}checked{% endif %}>
+                                <label class="form-check-label {% if item.is_checked %}text-muted text-decoration-line-through{% endif %}">
+                                    {{ item.name }}
+                                    {% if item.quantity %}
+                                        ({{ item.quantity }}{% if item.unit %} {{ item.unit }}{% endif %})
     {% endif %}
-</div>{# End dynamic container #}
-
-
-{# Removed Items Section - Updated by JS #}
-<div class="removed-items-container card {% if not removed_items %}hidden{% endif %}">
-    <h3>Removed Items (Already Have / Bought)</h3>
-    <p>Items previously on the list. Click "Re-add" to put back.</p>
-    <ul id="removed-items-list">
-        {% for item_data in removed_items %}
-        <li data-norm-name="{{ item_data.normalized_name }}" data-name="{{ item_data.name }}" data-aisle="{{ item_data.aisle or 'Unknown' }}" data-display-quantity="{{ item_data.get('display_quantity', '') }}" data-unit="{{ item_data.get('unit', '') }}" {% if item_data.is_custom %}data-is-custom="true" data-custom-index="{{ item_data.custom_item_index }}"{% endif %}>
-            <span>{{ item_data.name }} {% set qty_str=item_data.get('display_quantity','') %}{% set unit_str=item_data.get('unit','') %}{% if qty_str %} <span class="item-qty">({{ qty_str }}{% if unit_str %} {{ unit_str }}{% endif %})</span>{% endif %}<small>({{ item_data.aisle or 'Unknown' }})</small></span>
-            <button type="button" onclick="handleReAddItem(this)" value="{{ item_data.normalized_name }}" class="readd-button">Re-add</button>
+                                </label>
+                            </div>
+                            <button class="btn btn-sm btn-danger delete-item" data-item-id="{{ item.id }}">
+                                <i class="fas fa-trash"></i>
+                            </button>
         </li>
         {% endfor %}
     </ul>
 </div>
-
-
-{# Add Custom Item Form #}
-<form method="POST" action="{{ url_for('shopping_list') }}" id="add-custom-item-form">
-    <div class="add-custom-item card">
-         <h3>Add Custom Item</h3>
-         <input type="text" name="custom_item_name" placeholder="Item Name" required>
-         <input type="text" name="custom_item_aisle" placeholder="Aisle (optional)" list="aisle-suggestions">
-         <button type="submit">Add Custom Item</button>
+            </div>
+            {% endfor %}
+        {% else %}
+            <div class="alert alert-info">
+                Your shopping list is empty. Add items manually or generate a list from your meal plan.
+            </div>
+        {% endif %}
     </div>
-</form>
-
-
-{# Pantry Preview #}
-<div class="pantry-preview card">
-    <h3>Cupboard Contents (For Reference)</h3>
-    {% if pantry_items %}<ul>{% for name, data in pantry_items.items() %}<li>{{ data.original_name }} ({{ data.quantity }} {{ data.unit }}) - {{ data.aisle or 'Unknown' }}</li>{% endfor %}</ul>
-    {% else %}<p>Cupboard is empty.</p>{% endif %}
-    <a href="{{ url_for('cupboard') }}">Manage Cupboard</a>
 </div>
 
-{# Add datalist for aisle suggestions #}
-<datalist id="aisle-suggestions">
-    {% for aisle in distinct_aisles %}<option value="{{ aisle }}">{% endfor %}
-</datalist>
 {% endblock %}
 
-{% block scripts_extra %}
+{% block scripts %}
 <script>
-    const removedListElement = document.getElementById('removed-items-list');
-    const removedContainer = document.querySelector('.removed-items-container');
-    const dynamicListContainer = document.getElementById('shopping-list-dynamic-container');
-    const emptyListMessage = document.getElementById('empty-list-message');
-
-    function handleItemCheck(checkbox) {
-        const listItem = checkbox.closest('li');
-        const normName = listItem.dataset.normName;
-        const isChecked = checkbox.checked; // true = move TO removed
-
-        // Gather item data FROM data attributes for sending and potential re-creation
-        const itemDataForStorage = {
-            name: listItem.dataset.name, normalized_name: normName, aisle: listItem.dataset.aisle,
-            display_quantity: listItem.dataset.displayQuantity, unit: listItem.dataset.unit,
-            is_custom: listItem.hasAttribute('data-is-custom'),
-            custom_index: listItem.dataset.customIndex // Will be undefined if not custom
-        };
-
-        checkbox.disabled = true; // Prevent rapid clicking
-
-        fetch("{{ url_for('move_shopping_item') }}", {
-            method: 'POST', headers: {'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest'},
-            body: JSON.stringify({norm_name: normName, isChecked: isChecked, item_data: itemDataForStorage})
+document.addEventListener('DOMContentLoaded', function() {
+    // Function to handle checkbox changes
+    function handleCheckboxChange(checkbox) {
+        const itemId = checkbox.dataset.itemId;
+        const isChecked = checkbox.checked;
+        
+        fetch('{{ url_for("shopping_list") }}', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                item_id: itemId,
+                is_checked: isChecked
+            })
         })
         .then(response => response.json())
         .then(data => {
             if (data.success) {
-                moveItemVisually(listItem, isChecked, data.removed_item_data || itemDataForStorage);
-            } else { checkbox.checked = !isChecked; alert("Error: " + (data.error || "Could not update item.")); }
+                const label = checkbox.nextElementSibling;
+                if (isChecked) {
+                    label.classList.add('text-muted', 'text-decoration-line-through');
+                } else {
+                    label.classList.remove('text-muted', 'text-decoration-line-through');
+                }
+            }
         })
-        .catch(error => { checkbox.checked = !isChecked; console.error('Error:', error); alert("Network Error."); })
-        .finally(() => { if (document.getElementById(checkbox.id)) { document.getElementById(checkbox.id).disabled = false; } }); // Re-enable if still exists
+        .catch(error => console.error('Error updating checkbox:', error));
     }
 
-    function handleReAddItem(button) {
+    // Function to handle delete buttons
+    function handleDeleteButton(button) {
+        if (confirm('Are you sure you want to delete this item?')) {
+            const itemId = button.dataset.itemId;
         const listItem = button.closest('li');
-        const normName = button.value;
-        // Retrieve stored data from the removed item's data attributes
-        const itemData = {
-             name: listItem.dataset.name, normalized_name: normName, aisle: listItem.dataset.aisle,
-             display_quantity: listItem.dataset.displayQuantity, unit: listItem.dataset.unit,
-             is_custom: listItem.hasAttribute('data-is-custom'), custom_index: listItem.dataset.customIndex
-        };
-
-        button.disabled = true; button.textContent = '...';
-
-        fetch("{{ url_for('move_shopping_item') }}", {
-            method: 'POST', headers: {'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest'},
-            body: JSON.stringify({ norm_name: normName, isChecked: false }) // isChecked: false = re-add
+            
+            fetch('{{ url_for("delete_shopping_item") }}', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    item_id: itemId
+                })
         })
         .then(response => response.json())
         .then(data => {
             if (data.success) {
-                listItem.remove(); // Remove from removed list visually
-                addItemBackToVisualList(itemData); // Add back to main list visually
-                checkRemovedListEmpty(); // Check if removed list container needs hiding
-            } else { alert("Error: " + (data.error || "Could not re-add item.")); button.disabled = false; button.textContent = 'Re-add'; }
-        })
-        .catch(error => { console.error('Error:', error); alert("Network Error."); button.disabled = false; button.textContent = 'Re-add'; });
+                    listItem.remove();
+                    
+                    // If this was the last item in an aisle, remove the entire aisle card
+                    const aisleCard = listItem.closest('.card');
+                    const remainingItems = aisleCard.querySelectorAll('.list-group-item');
+                    if (remainingItems.length === 0) {
+                        aisleCard.remove();
+                    }
+                    
+                    // If no items remain, show the empty message
+                    const allItems = document.querySelectorAll('.list-group-item');
+                    if (allItems.length === 0) {
+                        location.reload(); // Reload to show empty message
+                    }
+                }
+            })
+            .catch(error => console.error('Error deleting item:', error));
+        }
     }
 
-    function moveItemVisually(listItemElement, isMovingToRemoveList, removedItemData) {
-        if (isMovingToRemoveList) {
-            const removedLi = document.createElement('li');
-            // Set data attributes on the new removed LI using the data received from backend/original item
-            removedLi.dataset.normName = removedItemData.normalized_name;
-            removedLi.dataset.name = removedItemData.name;
-            removedLi.dataset.aisle = removedItemData.aisle || 'Unknown';
-            removedLi.dataset.displayQuantity = removedItemData.display_quantity || '';
-            removedLi.dataset.unit = removedItemData.unit || '';
-            if (removedItemData.is_custom) {
-                removedLi.dataset.isCustom = "true";
-                removedLi.dataset.customIndex = removedItemData.custom_index;
-            }
+    // Function to attach event listeners to elements
+    function attachEventListeners() {
+        // Attach checkbox event listeners
+        document.querySelectorAll('.item-checkbox').forEach(checkbox => {
+            checkbox.removeEventListener('change', handleCheckboxChange);
+            checkbox.addEventListener('change', function() {
+                handleCheckboxChange(this);
+            });
+        });
 
-            let qtyUnitString = '';
-            if (removedItemData.display_quantity && removedItemData.display_quantity !== '(Check recipes)') {
-                 qtyUnitString = `(${removedItemData.display_quantity}${removedItemData.unit ? ' ' + removedItemData.unit : ''})`;
-            } else if (removedItemData.display_quantity) { // Handle "(Check recipes)"
-                qtyUnitString = removedItemData.display_quantity;
-            }
-
-            removedLi.innerHTML = `
-                <span>${removedItemData.name} <span class="item-qty">${qtyUnitString}</span> <small>(${removedItemData.aisle || 'Unknown'})</small></span>
-                <button type="button" onclick="handleReAddItem(this)" value="${removedItemData.normalized_name}" class="readd-button">Re-add</button>`;
-            removedListElement.appendChild(removedLi);
-            removedContainer.classList.remove('hidden');
-            const originalAisleUL = listItemElement.closest('ul.shopping-list-aisle'); // Get UL before removing item
-            listItemElement.remove(); // Remove from the main list
-            checkAisleEmpty(originalAisleUL); // Check if original aisle is now empty
-        }
-        // Re-add is handled by handleReAddItem calling addItemBackToVisualList
+        // Attach delete button event listeners
+        document.querySelectorAll('.delete-item').forEach(button => {
+            button.removeEventListener('click', handleDeleteButton);
+            button.addEventListener('click', function() {
+                handleDeleteButton(this);
+            });
+        });
     }
 
-    function addItemBackToVisualList(itemData) {
-        // Find or create the target aisle UL
-        const aisleId = `aisle-ul-${(itemData.aisle || 'Unknown').replace(' ', '_').replace('/','_')}`;
-        let targetUl = document.getElementById(aisleId);
-        let aisleSection = document.getElementById(`aisle-section-${(itemData.aisle || 'Unknown').replace(' ', '_').replace('/','_')}`);
+    // Initial attachment of event listeners
+    attachEventListeners();
 
-        // If aisle section doesn't exist, create it (more robust)
-        if (!aisleSection) {
-            aisleSection = document.createElement('div');
-            aisleSection.className = 'aisle-section';
-            aisleSection.id = `aisle-section-${(itemData.aisle || 'Unknown').replace(' ', '_').replace('/','_')}`;
-            const h4 = document.createElement('h4');
-            h4.textContent = itemData.aisle || 'Unknown';
-            targetUl = document.createElement('ul');
-            targetUl.className = 'shopping-list-aisle';
-            targetUl.id = aisleId;
-            aisleSection.appendChild(h4);
-            aisleSection.appendChild(targetUl);
-
-            // Find where to insert the new aisle section (alphabetical/ordered)
-            // This is complex, for now just append to the main container
-            const shoppingListDiv = dynamicListContainer.querySelector('.shopping-list-container');
-            if (shoppingListDiv) { shoppingListDiv.appendChild(aisleSection); }
-            else { dynamicListContainer.appendChild(aisleSection); } // Fallback if container structure changes
-        } else {
-            // Ensure section and UL are visible if previously hidden
-            aisleSection.classList.remove('hidden');
-            if (targetUl) { targetUl.classList.remove('hidden'); }
-        }
-
-        // Create the new list item element
-        const li = document.createElement('li');
-        li.className = 'shopping-list-item';
-        // Add necessary data attributes
-        li.dataset.normName = itemData.normalized_name; li.dataset.name = itemData.name; li.dataset.aisle = itemData.aisle;
-        li.dataset.displayQuantity = itemData.display_quantity; li.dataset.unit = itemData.unit;
-        if (itemData.is_custom) { li.dataset.isCustom = "true"; li.dataset.customIndex = itemData.custom_index; }
-
-        // Inner HTML structure
-        let qtyUnitString = '';
-        if (itemData.display_quantity && itemData.display_quantity !== '(Check recipes)') { qtyUnitString = `(${itemData.display_quantity}${itemData.unit ? ' ' + itemData.unit : ''})`; }
-        else if (itemData.display_quantity) { qtyUnitString = itemData.display_quantity; }
-
-        li.innerHTML = `
-            <input type="checkbox" id="check_${itemData.normalized_name.replace(' ', '_')}${itemData.is_custom ? '_custom' : ''}" class="item-checkbox" onchange="handleItemCheck(this)">
-            <label for="check_${itemData.normalized_name.replace(' ', '_')}${itemData.is_custom ? '_custom' : ''}" class="item-label">
-                <span class="item-name">${itemData.name}</span><span class="item-qty">${qtyUnitString}</span>
-                ${itemData.in_pantry ? `<span class="pantry-indicator" title="In Cupboard: ${itemData.pantry_available}">(In Cupboard${itemData.pantry_deducted ? ' - ' + itemData.pantry_deducted + ' ' + itemData.unit + ' deducted' : ''})</span>` : ''}
-                ${!itemData.is_custom && itemData.recipes && itemData.recipes.length > 0 ? `<small class="recipe-source">(From: ${itemData.recipes.join(', ')})</small>` : ''}
-            </label>`;
-
-        // Insert the new LI into the correct UL, maintaining alphabetical order
-        const existingItems = targetUl.querySelectorAll('li .item-name');
-        let inserted = false;
-        for (let existingLi of targetUl.children) {
-            const existingNameElement = existingLi.querySelector('.item-name');
-            if (existingNameElement && itemData.name.toLowerCase() < existingNameElement.textContent.toLowerCase()) {
-                targetUl.insertBefore(li, existingLi);
-                inserted = true;
-                break;
-            }
-        }
-        if (!inserted) { targetUl.appendChild(li); } // Append if it belongs at the end
-
-        checkAisleEmpty(targetUl); // Ensure empty message is hidden
+    // Function to check for updates every 0.5 seconds
+    function checkForUpdates() {
+        fetch('{{ url_for("check_shopping_list_updates") }}')
+            .then(response => response.json())
+            .then(data => {
+                if (data.needs_update) {
+                    // Reload the shopping list content
+                    fetch('{{ url_for("get_shopping_list_content") }}')
+                        .then(response => response.text())
+                        .then(html => {
+                            document.getElementById('shopping-list-container').innerHTML = html;
+                            // Reattach event listeners to new elements
+                            attachEventListeners();
+                        })
+                        .catch(error => console.error('Error fetching updated content:', error));
+                }
+            })
+            .catch(error => console.error('Error checking for updates:', error));
     }
 
-
-    function checkRemovedListEmpty() { if (removedListElement && removedListElement.children.length === 0) { removedContainer.classList.add('hidden'); } else if (removedContainer) { removedContainer.classList.remove('hidden'); } }
-    function checkAisleEmpty(aisleUl) {
-        const section = aisleUl?.closest('.aisle-section');
-        if (aisleUl && section) {
-             const hasVisibleItems = aisleUl.querySelector('li'); // Check if any li exists inside
-             section.classList.toggle('hidden', !hasVisibleItems); // Hide section if no li
-        }
-         // Check if overall list is now empty
-        const allSections = dynamicListContainer.querySelectorAll('.aisle-section');
-        const allHidden = Array.from(allSections).every(sec => sec.classList.contains('hidden'));
-        if (emptyListMessage) { emptyListMessage.style.display = allHidden ? 'block' : 'none'; }
-    }
-    document.addEventListener('DOMContentLoaded', () => { checkRemovedListEmpty(); dynamicListContainer.querySelectorAll('.shopping-list-aisle').forEach(checkAisleEmpty); });
+    // Start checking for updates
+    setInterval(checkForUpdates, 500);
+});
 </script>
 {% endblock %}

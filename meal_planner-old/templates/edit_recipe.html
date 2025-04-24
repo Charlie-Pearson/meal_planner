@@ -12,7 +12,6 @@
 </datalist>
 
 <form method="POST" action="{{ url_for('edit_recipe', recipe_id=recipe.id) }}" id="recipe-form">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <div><label for="name">Recipe Name:</label><input type="text" id="name" name="name" required value="{{ request.form.get('name', recipe.name) }}"></div>
     <div><label for="source_link">Source Link (URL, optional):</label><input type="url" id="source_link" name="source_link" value="{{ request.form.get('source_link', recipe.source_link) }}"></div>
     <div><label for="servings">Servings:</label><input type="number" id="servings" name="servings" required min="1" value="{{ request.form.get('servings', recipe.servings) }}"></div>

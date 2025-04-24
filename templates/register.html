@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+
+{% block title %}Register{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <h2 class="text-center mb-0">Register</h2>
+            </div>
+            <div class="card-body">
+                <form method="POST" class="needs-validation" novalidate>
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    
+                    <div class="mb-3">
+                        <label for="name" class="form-label">Name</label>
+                        <input type="text" class="form-control" id="name" name="name" required>
+                        <div class="invalid-feedback">Please enter your name.</div>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="email" class="form-label">Email</label>
+                        <input type="email" class="form-control" id="email" name="email" 
+                               pattern="[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$"
+                               required>
+                        <div class="invalid-feedback">Please enter a valid email address.</div>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="password" class="form-label">Password</label>
+                        <input type="password" class="form-control" id="password" name="password" 
+                               pattern="^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$"
+                               required>
+                        <div class="form-text">
+                            Password must contain:
+                            <ul class="mb-0">
+                                <li id="length">At least 8 characters</li>
+                                <li id="uppercase">At least one uppercase letter</li>
+                                <li id="lowercase">At least one lowercase letter</li>
+                                <li id="number">At least one number</li>
+                                <li id="special">At least one special character (@$!%*?&)</li>
+                            </ul>
+                        </div>
+                        <div class="invalid-feedback">Please enter a strong password.</div>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="confirm_password" class="form-label">Confirm Password</label>
+                        <input type="password" class="form-control" id="confirm_password" name="confirm_password" required>
+                        <div class="invalid-feedback">Passwords do not match.</div>
+                    </div>
+                    
+                    <div class="d-grid gap-2">
+                        <button type="submit" class="btn btn-primary">Register</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const form = document.querySelector('form');
+    const password = document.getElementById('password');
+    const confirmPassword = document.getElementById('confirm_password');
+    
+    // Password strength indicators
+    const requirements = {
+        length: /.{8,}/,
+        uppercase: /[A-Z]/,
+        lowercase: /[a-z]/,
+        number: /[0-9]/,
+        special: /[@$!%*?&]/
+    };
+    
+    // Update password requirements UI
+    password.addEventListener('input', function() {
+        for (const [key, regex] of Object.entries(requirements)) {
+            const element = document.getElementById(key);
+            if (regex.test(this.value)) {
+                element.style.color = 'green';
+            } else {
+                element.style.color = 'red';
+            }
+        }
+    });
+    
+    // Form validation
+    form.addEventListener('submit', function(event) {
+        if (!form.checkValidity()) {
+            event.preventDefault();
+            event.stopPropagation();
+        }
+        
+        // Check if passwords match
+        if (password.value !== confirmPassword.value) {
+            confirmPassword.setCustomValidity("Passwords do not match");
+            event.preventDefault();
+            event.stopPropagation();
+        } else {
+            confirmPassword.setCustomValidity("");
+        }
+        
+        form.classList.add('was-validated');
+    });
+    
+    // Real-time password match validation
+    confirmPassword.addEventListener('input', function() {
+        if (password.value !== this.value) {
+            this.setCustomValidity("Passwords do not match");
+        } else {
+            this.setCustomValidity("");
+        }
+    });
+});
+</script>
+{% endblock %} 
