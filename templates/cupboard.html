@@ -4,41 +4,171 @@
 {% block title %}Cupboard Contents{% endblock %}
 
 {% block content %}
-<h2>Cupboard / Pantry</h2>
+<div class="container py-4">
+    <h2 class="page-title h3 mb-4">Cupboard Contents</h2>
 
-<div class="card cupboard-management">
-    <h3>Add/Update Pantry Item</h3>
-    <p>Entering an existing item name will update its quantity, unit, and aisle.</p>
-    <form method="POST" action="{{ url_for('cupboard') }}" class="cupboard-add-form">
-        <input type="text" name="add_name" placeholder="Item Name" required>
-        <input type="text" name="add_qty" placeholder="Quantity (e.g., 1, 500)">
-        <input type="text" name="add_unit" placeholder="Unit (e.g., kg, tin, pack)">
-        <input type="text" name="add_aisle" placeholder="Aisle (e.g., Canned Goods)">
-        <button type="submit">Add/Update Item</button>
-    </form>
+    <div class="card mb-4">
+        <div class="card-body">
+            <form method="POST" action="{{ url_for('cupboard') }}" class="needs-validation" novalidate>
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <div class="row g-4">
+                    <!-- Item Name -->
+                    <div class="col-md-3">
+                        <div class="form-group">
+                            <label for="add_name" class="form-label">Item Name</label>
+                            <input type="text" class="form-control" id="add_name" name="add_name" required>
+                        </div>
+                    </div>
+
+                    <!-- Quantity -->
+                    <div class="col-md-3">
+                        <div class="form-group">
+                            <label for="add_qty" class="form-label">Quantity</label>
+                            <input type="number" class="form-control" id="add_qty" name="add_qty" required min="0" step="0.01">
+                        </div>
+                    </div>
+
+                    <!-- Unit -->
+                    <div class="col-md-3">
+                        <div class="form-group">
+                            <label for="add_unit" class="form-label">Unit</label>
+                            <input type="text" class="form-control" id="add_unit" name="add_unit" required>
+                        </div>
+                    </div>
+
+                    <!-- Aisle -->
+                    <div class="col-md-3">
+                        <div class="form-group">
+                            <label for="add_aisle" class="form-label">Aisle</label>
+                            <select class="form-control" id="add_aisle" name="add_aisle">
+                                <option value="">Select Aisle</option>
+                                {% for aisle in distinct_aisles %}
+                                    <option value="{{ aisle }}">{{ aisle }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- Submit Button -->
+                    <div class="col-12">
+                        <div class="d-flex justify-content-end">
+                            <button type="submit" name="submit_add" class="btn btn-primary">
+                                <i class="fas fa-plus-circle me-2"></i>Add Item
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Current Stock -->
+    <div class="card">
+        <div class="card-body">
+            <h3 class="h4 mb-4">Current Stock</h3>
+            {% if pantry_items %}
+                {% for aisle, items in pantry_items.items() %}
+                    <div class="aisle-section mb-4">
+                        <h4 class="h5 mb-3">{{ aisle }}</h4>
+                        <div class="table-responsive">
+                            <table class="table table-hover align-middle">
+                                <thead>
+                                    <tr>
+                                        <th>Item</th>
+                                        <th>Quantity</th>
+                                        <th>Unit</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for item in items %}
+                                        <tr>
+                                            <td>{{ item.name }}</td>
+                                            <td>{{ item.quantity }}</td>
+                                            <td>{{ item.unit }}</td>
+                                            <td>
+                                                <form method="POST" action="{{ url_for('cupboard') }}" class="d-inline">
+                                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                                    <input type="hidden" name="remove_item" value="{{ item.id }}">
+                                                    <button type="submit" class="btn btn-danger btn-sm">
+                                                        <i class="fas fa-trash-alt"></i>
+                                                    </button>
+                                                </form>
+                                            </td>
+                                        </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                {% endfor %}
+            {% else %}
+                <div class="alert alert-info">
+                    <i class="fas fa-info-circle me-2"></i>Your cupboard is empty. Add some items above!
+                </div>
+            {% endif %}
+        </div>
+    </div>
 </div>
 
+<style>
+    .form-group {
+        margin-bottom: 1rem;
+    }
 
-<div class="card cupboard-list">
-    <h3>Current Stock</h3>
-    {% if pantry_items %}
-        {% for aisle in pantry_items %}
-         <h4>{{ aisle }}</h4>
-         <ul>
-             {% for item in pantry_items[aisle] %}
-             <li>
-                 {{ item.name }} - {{ item.quantity }} {{ item.unit }}
-                 <form method="POST" action="{{ url_for('cupboard') }}" style="display: inline; margin-left: 15px;">
-                     <input type="hidden" name="delete_id" value="{{ item.id }}">
-                     <button type="submit" class="delete-button-small" onclick="return confirm('Remove {{ item.name }} from cupboard?')">Remove</button>
-                 </form>
-             </li>
-             {% endfor %}
-         </ul>
-        {% endfor %}
-    {% else %}
-        <p>Your cupboard is currently empty.</p>
-    {% endif %}
-</div>
+    .form-control {
+        background-color: #fff;
+        border: 1px solid #E2E8F0;
+        transition: all 0.3s ease;
+    }
 
+    .form-control:focus {
+        border-color: var(--brand-primary);
+        box-shadow: 0 0 0 3px rgba(14,138,62,0.1);
+    }
+
+    .btn-primary {
+        padding: 0.75rem 1.5rem;
+        font-weight: 500;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+
+    .table {
+        margin-bottom: 0;
+    }
+
+    .table th {
+        font-weight: 600;
+        background-color: #f8f9fa;
+    }
+
+    .btn-danger {
+        padding: 0.375rem 0.75rem;
+    }
+
+    .aisle-section:not(:last-child) {
+        border-bottom: 1px solid #E2E8F0;
+        padding-bottom: 2rem;
+    }
+</style>
+
+{% block scripts_extra %}
+<script>
+    // Form validation
+    (function () {
+        'use strict'
+        var forms = document.querySelectorAll('.needs-validation')
+        Array.prototype.slice.call(forms).forEach(function (form) {
+            form.addEventListener('submit', function (event) {
+                if (!form.checkValidity()) {
+                    event.preventDefault()
+                    event.stopPropagation()
+                }
+                form.classList.add('was-validated')
+            }, false)
+        })
+    })()
+</script>
+{% endblock %}
 {% endblock %}

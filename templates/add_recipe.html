@@ -4,54 +4,161 @@
 {% block title %}Add New Recipe{% endblock %}
 
 {% block content %}
-<h2>Add New Recipe</h2>
+<div class="container py-4">
+    <h2 class="page-title h3 mb-4">Add New Recipe</h2>
 
-<form method="POST" action="{{ url_for('add_recipe') }}" id="recipe-form">
+    <div class="card">
+        <div class="card-body">
+            <form method="POST" action="{{ url_for('add_recipe') }}" id="recipe-form" class="needs-validation" novalidate>
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <div class="row g-4">
+                    <!-- Recipe Name -->
+                    <div class="col-md-6">
+                        <div class="form-group">
+                            <label for="name" class="form-label">Recipe Name</label>
+                            <input type="text" class="form-control" id="name" name="name" required 
+                                value="{{ request.form.get('name', '') }}"
+                                placeholder="Enter recipe name">
+                        </div>
+                    </div>
 
-    <div>
-        <label for="name">Recipe Name:</label>
-        <input type="text" id="name" name="name" required value="{{ request.form.get('name', '') }}">
-    </div>
-    <div>
-        <label for="source_link">Source Link (URL, optional):</label>
-        <input type="url" id="source_link" name="source_link" value="{{ request.form.get('source_link', '') }}">
-    </div>
-    <div>
-        <label for="servings">Servings (Number of people):</label>
-        <input type="number" id="servings" name="servings" required min="1" value="{{ request.form.get('servings', '') }}">
-    </div>
-     <div class="checkbox-group"> {# Wrap checkboxes and label #}
-        <label style="display: block; margin-bottom: 5px;">Meal Type(s):</label> {# Main label #}
-        <div class="checkbox-inline-options"> {# Container for inline options #}
-            <input type="checkbox" id="is_breakfast" name="is_breakfast" value="1" {% if request.form.get('is_breakfast') %}checked{% endif %}>
-            <label for="is_breakfast" class="checkbox-label">Breakfast</label> {# Inline label #}
-            <input type="checkbox" id="is_lunch" name="is_lunch" value="1" {% if request.form.get('is_lunch') %}checked{% endif %}>
-            <label for="is_lunch" class="checkbox-label">Lunch</label>
-            <input type="checkbox" id="is_dinner" name="is_dinner" value="1" {% if request.form.get('is_dinner') %}checked{% endif %}>
-            <label for="is_dinner" class="checkbox-label">Dinner</label>
+                    <!-- Source Link -->
+                    <div class="col-md-6">
+                        <div class="form-group">
+                            <label for="source_link" class="form-label">Source Link (Optional)</label>
+                            <input type="url" class="form-control" id="source_link" name="source_link" 
+                                value="{{ request.form.get('source_link', '') }}"
+                                placeholder="https://...">
+                        </div>
+                    </div>
+
+                    <!-- Servings -->
+                    <div class="col-md-6">
+                        <div class="form-group">
+                            <label for="servings" class="form-label">Servings</label>
+                            <input type="number" class="form-control" id="servings" name="servings" 
+                                required min="1" value="{{ request.form.get('servings', '') }}"
+                                placeholder="Number of people">
+                        </div>
+                    </div>
+
+                    <!-- Meal Types -->
+                    <div class="col-md-6">
+                        <label class="form-label d-block">Meal Type(s)</label>
+                        <div class="form-check form-check-inline">
+                            <input type="checkbox" class="form-check-input" id="is_breakfast" name="is_breakfast" 
+                                value="1" {% if request.form.get('is_breakfast') %}checked{% endif %}>
+                            <label class="form-check-label" for="is_breakfast">Breakfast</label>
+                        </div>
+                        <div class="form-check form-check-inline">
+                            <input type="checkbox" class="form-check-input" id="is_lunch" name="is_lunch" 
+                                value="1" {% if request.form.get('is_lunch') %}checked{% endif %}>
+                            <label class="form-check-label" for="is_lunch">Lunch</label>
+                        </div>
+                        <div class="form-check form-check-inline">
+                            <input type="checkbox" class="form-check-input" id="is_dinner" name="is_dinner" 
+                                value="1" {% if request.form.get('is_dinner') %}checked{% endif %}>
+                            <label class="form-check-label" for="is_dinner">Dinner</label>
+                        </div>
+                    </div>
+
+                    <!-- Ingredients -->
+                    <div class="col-12">
+                        <div class="form-group">
+                            <label for="ingredients" class="form-label">Ingredients</label>
+                            <div class="alert alert-info ingredient-format mb-2">
+                                <i class="fas fa-info-circle me-2"></i>
+                                Enter one ingredient per line. Format: <strong>Ingredient Name - Quantity - Unit</strong><br>
+                                (e.g., Flour - 1 - cup). Quantity/Unit optional. Aisle is auto-assigned if known, otherwise 'Unknown'.
+                            </div>
+                            <textarea class="form-control" id="ingredients" name="ingredients" 
+                                rows="8" required placeholder="Enter ingredients...">{{ request.form.get('ingredients', '') }}</textarea>
+                        </div>
+                    </div>
+
+                    <!-- Method -->
+                    <div class="col-12">
+                        <div class="form-group">
+                            <label for="method" class="form-label">Method (Optional)</label>
+                            <textarea class="form-control" id="method" name="method" 
+                                rows="8" placeholder="Enter cooking instructions...">{{ request.form.get('method', '') }}</textarea>
+                        </div>
+                    </div>
+
+                    <!-- Submit Button -->
+                    <div class="col-12">
+                        <div class="d-flex justify-content-end">
+                            <button type="submit" class="btn btn-primary">
+                                <i class="fas fa-plus-circle me-2"></i>Add Recipe
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </form>
         </div>
     </div>
+</div>
 
-    <div>
-        <label for="ingredients">Ingredients:</label>
-        <div class="ingredient-format">
-            Enter one ingredient per line. Format: <b>Ingredient Name - Quantity - Unit</b><br>
-            (e.g., Flour - 1 - cup). Quantity/Unit optional. Aisle is auto-assigned if known, otherwise 'Unknown'.
-        </div>
-        <textarea id="ingredients" name="ingredients" rows="10" required>{{ request.form.get('ingredients', '') }}</textarea>
-    </div>
+<style>
+    .form-group {
+        margin-bottom: 1rem;
+    }
 
-    <div>
-        <label for="method">Method (Optional):</label> {# Label updated #}
-        <textarea id="method" name="method" rows="15">{{ request.form.get('method', '') }}</textarea> {# Removed required #}
-    </div>
+    .form-control {
+        background-color: #fff;
+        border: 1px solid #E2E8F0;
+        transition: all 0.3s ease;
+    }
 
-    <button type="submit">Add Recipe</button>
-</form>
+    .form-control:focus {
+        border-color: var(--brand-primary);
+        box-shadow: 0 0 0 3px rgba(14,138,62,0.1);
+    }
+
+    textarea.form-control {
+        min-height: 120px;
+        line-height: 1.6;
+    }
+
+    .ingredient-format {
+        font-size: 0.9rem;
+        border-radius: 8px;
+    }
+
+    .form-check-input:checked {
+        background-color: var(--brand-primary);
+        border-color: var(--brand-primary);
+    }
+
+    .form-check-input:focus {
+        border-color: var(--brand-primary);
+        box-shadow: 0 0 0 3px rgba(14,138,62,0.1);
+    }
+
+    .btn-primary {
+        padding: 0.75rem 1.5rem;
+        font-weight: 500;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+</style>
 {% endblock %}
 
 {% block scripts_extra %}
 <script>
-    // No JavaScript needed
+    // Form validation
+    (function () {
+        'use strict'
+        var forms = document.querySelectorAll('.needs-validation')
+        Array.prototype.slice.call(forms).forEach(function (form) {
+            form.addEventListener('submit', function (event) {
+                if (!form.checkValidity()) {
+                    event.preventDefault()
+                    event.stopPropagation()
+                }
+                form.classList.add('was-validated')
+            }, false)
+        })
+    })()
 </script>
 {% endblock %}

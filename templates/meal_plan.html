@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+
+{% block title %}Meal Plan{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="row">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h2>Your Meal Plan</h2>
+                    <div>
+                        <a href="{{ url_for('generate_meal_plan_route') }}" class="btn btn-secondary me-2">Generate New Plan</a>
+                        <form action="{{ url_for('confirm_meal_plan') }}" method="POST" class="d-inline">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button type="submit" class="btn btn-primary">Confirm Plan</button>
+                        </form>
+                    </div>
+                </div>
+                <div class="card-body">
+                    {% if meal_plan %}
+                        <div class="table-responsive">
+                            <table class="table table-bordered">
+                                <thead>
+                                    <tr>
+                                        <th>Date</th>
+                                        <th>Breakfast</th>
+                                        <th>Lunch</th>
+                                        <th>Dinner</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for date, meals in meal_plan.meals.items() %}
+                                    <tr>
+                                        <td>{{ date }}</td>
+                                        <td>
+                                            {% if meals.breakfast %}
+                                                {{ meals.breakfast.name }}
+                                                <div class="form-check d-inline ms-2">
+                                                    <input class="form-check-input lock-checkbox" type="checkbox" id="lock_{{ date }}_breakfast" data-slot="{{ date }}_breakfast"
+                                                        {% if locked_meals[date ~ '_breakfast'] %}checked{% endif %}>
+                                                    <label class="form-check-label" for="lock_{{ date }}_breakfast">
+                                                        <i class="fas fa-lock{{ '' if locked_meals[date ~ '_breakfast'] else '-open' }}"></i>
+                                                    </label>
+                                                </div>
+                                            {% else %}
+                                                <span class="text-muted">Not planned</span>
+                                            {% endif %}
+                                        </td>
+                                        <td>
+                                            {% if meals.lunch %}
+                                                {{ meals.lunch.name }}
+                                                <div class="form-check d-inline ms-2">
+                                                    <input class="form-check-input lock-checkbox" type="checkbox" id="lock_{{ date }}_lunch" data-slot="{{ date }}_lunch"
+                                                        {% if locked_meals[date ~ '_lunch'] %}checked{% endif %}>
+                                                    <label class="form-check-label" for="lock_{{ date }}_lunch">
+                                                        <i class="fas fa-lock{{ '' if locked_meals[date ~ '_lunch'] else '-open' }}"></i>
+                                                    </label>
+                                                </div>
+                                            {% else %}
+                                                <span class="text-muted">Not planned</span>
+                                            {% endif %}
+                                        </td>
+                                        <td>
+                                            {% if meals.dinner %}
+                                                {{ meals.dinner.name }}
+                                                <div class="form-check d-inline ms-2">
+                                                    <input class="form-check-input lock-checkbox" type="checkbox" id="lock_{{ date }}_dinner" data-slot="{{ date }}_dinner"
+                                                        {% if locked_meals[date ~ '_dinner'] %}checked{% endif %}>
+                                                    <label class="form-check-label" for="lock_{{ date }}_dinner">
+                                                        <i class="fas fa-lock{{ '' if locked_meals[date ~ '_dinner'] else '-open' }}"></i>
+                                                    </label>
+                                                </div>
+                                            {% else %}
+                                                <span class="text-muted">Not planned</span>
+                                            {% endif %}
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    {% else %}
+                        <div class="alert alert-info">
+                            No meal plan found. Click "Generate New Plan" to create one.
+                        </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts_extra %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    document.querySelectorAll('.lock-checkbox').forEach(function(checkbox) {
+        checkbox.addEventListener('change', function() {
+            const slotId = this.getAttribute('data-slot');
+            const isLocked = this.checked;
+            fetch('/toggle_meal_lock', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': document.querySelector('input[name=csrf_token]').value
+                },
+                body: JSON.stringify({ slot_id: slotId, locked: isLocked })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    // Optionally update UI or reload
+                    location.reload();
+                } else {
+                    alert('Failed to update lock state');
+                }
+            });
+        });
+    });
+});
+</script>
+{% endblock %} 

@@ -1,0 +1,26 @@
+{% for aisle, items in items_by_aisle.items() %}
+<div class="aisle-section mb-4">
+    <h3 class="aisle-header">{{ aisle }}</h3>
+    <div class="aisle-items">
+        {% for item in items %}
+        <div class="shopping-item" data-item-id="{{ item.id }}">
+            <div class="form-check">
+                <input type="checkbox" class="form-check-input item-checkbox" 
+                       id="item-{{ item.id }}" 
+                       {% if item.is_checked %}checked{% endif %}>
+                <label class="form-check-label {% if item.is_checked %}text-decoration-line-through{% endif %}" 
+                       for="item-{{ item.id }}">
+                    {{ item.name }}
+                    {% if item.quantity %}
+                    <span class="quantity">({{ item.quantity }})</span>
+                    {% endif %}
+                </label>
+            </div>
+            <button class="btn btn-sm btn-danger delete-item" data-item-id="{{ item.id }}">
+                <i class="fas fa-trash"></i>
+            </button>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endfor %} 

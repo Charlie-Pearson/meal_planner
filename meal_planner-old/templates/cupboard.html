@@ -1,0 +1,44 @@
+<!-- meal_planner/templates/cupboard.html -->
+{% extends 'base.html' %}
+
+{% block title %}Cupboard Contents{% endblock %}
+
+{% block content %}
+<h2>Cupboard / Pantry</h2>
+
+<div class="card cupboard-management">
+    <h3>Add/Update Pantry Item</h3>
+    <p>Entering an existing item name will update its quantity, unit, and aisle.</p>
+    <form method="POST" action="{{ url_for('cupboard') }}" class="cupboard-add-form">
+        <input type="text" name="add_name" placeholder="Item Name" required>
+        <input type="text" name="add_qty" placeholder="Quantity (e.g., 1, 500)">
+        <input type="text" name="add_unit" placeholder="Unit (e.g., kg, tin, pack)">
+        <input type="text" name="add_aisle" placeholder="Aisle (e.g., Canned Goods)">
+        <button type="submit">Add/Update Item</button>
+    </form>
+</div>
+
+
+<div class="card cupboard-list">
+    <h3>Current Stock</h3>
+    {% if pantry_items %}
+        {% for aisle in pantry_items %}
+         <h4>{{ aisle }}</h4>
+         <ul>
+             {% for item in pantry_items[aisle] %}
+             <li>
+                 {{ item.name }} - {{ item.quantity }} {{ item.unit }}
+                 <form method="POST" action="{{ url_for('cupboard') }}" style="display: inline; margin-left: 15px;">
+                     <input type="hidden" name="delete_id" value="{{ item.id }}">
+                     <button type="submit" class="delete-button-small" onclick="return confirm('Remove {{ item.name }} from cupboard?')">Remove</button>
+                 </form>
+             </li>
+             {% endfor %}
+         </ul>
+        {% endfor %}
+    {% else %}
+        <p>Your cupboard is currently empty.</p>
+    {% endif %}
+</div>
+
+{% endblock %}

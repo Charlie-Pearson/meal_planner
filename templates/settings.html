@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+
+{% block title %}Account Settings{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-header">
+                <h2 class="mb-0">Account Settings</h2>
+            </div>
+            <div class="card-body">
+                <form method="POST" class="needs-validation" novalidate>
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    
+                    <div class="mb-4">
+                        <h4>Meal Plan Settings</h4>
+                        <div class="row">
+                            <div class="col-md-6 mb-3">
+                                <label for="num_people" class="form-label">Number of People</label>
+                                <input type="number" class="form-control" id="num_people" name="num_people" 
+                                       value="{{ settings.num_people }}" min="1" required>
+                                <div class="invalid-feedback">Please enter a valid number of people.</div>
+                            </div>
+                            
+                            <div class="col-md-6 mb-3">
+                                <label for="meal_plan_start_day" class="form-label">Meal Plan Start Day</label>
+                                <select class="form-select" id="meal_plan_start_day" name="meal_plan_start_day" required>
+                                    {% for day in ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] %}
+                                    <option value="{{ day }}" {% if settings.meal_plan_start_day == day %}selected{% endif %}>
+                                        {{ day }}
+                                    </option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                            
+                            <div class="col-md-6 mb-3">
+                                <label for="meal_plan_duration" class="form-label">Meal Plan Duration (Days)</label>
+                                <input type="number" class="form-control" id="meal_plan_duration" name="meal_plan_duration" 
+                                       value="{{ settings.meal_plan_duration }}" min="1" max="31" required>
+                                <div class="invalid-feedback">Please enter a valid duration between 1 and 31 days.</div>
+                            </div>
+
+                            <div class="col-md-6 mb-3">
+                                <label for="meal_repeat_interval" class="form-label">Minimum Days Between Repeat Meals</label>
+                                <input type="number" class="form-control" id="meal_repeat_interval" name="meal_repeat_interval" 
+                                       value="{{ settings.meal_repeat_interval }}" min="0" max="31">
+                                <div class="form-text">Set to 0 for no restriction, or specify minimum days between repeat meals.</div>
+                                <div class="invalid-feedback">Please enter a valid number between 0 and 31.</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="mb-4">
+                        <h4>Default Meals</h4>
+                        <div class="row">
+                            <div class="col-md-4 mb-3">
+                                <label for="default_breakfast" class="form-label">Default Breakfast</label>
+                                <select class="form-select" id="default_breakfast" name="default_breakfast_id">
+                                    <option value="">No default breakfast</option>
+                                    {% for recipe in breakfast_recipes %}
+                                    <option value="{{ recipe.id }}" {% if settings.default_breakfast_id == recipe.id %}selected{% endif %}>
+                                        {{ recipe.name }}
+                                    </option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                            
+                            <div class="col-md-4 mb-3">
+                                <label for="default_lunch" class="form-label">Default Lunch</label>
+                                <select class="form-select" id="default_lunch" name="default_lunch_id">
+                                    <option value="">No default lunch</option>
+                                    {% for recipe in lunch_recipes %}
+                                    <option value="{{ recipe.id }}" {% if settings.default_lunch_id == recipe.id %}selected{% endif %}>
+                                        {{ recipe.name }}
+                                    </option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                            
+                            <div class="col-md-4 mb-3">
+                                <label for="default_dinner" class="form-label">Default Dinner</label>
+                                <select class="form-select" id="default_dinner" name="default_dinner_id">
+                                    <option value="">No default dinner</option>
+                                    {% for recipe in dinner_recipes %}
+                                    <option value="{{ recipe.id }}" {% if settings.default_dinner_id == recipe.id %}selected{% endif %}>
+                                        {{ recipe.name }}
+                                    </option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="d-grid gap-2">
+                        <button type="submit" class="btn btn-primary">Save Settings</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// Form validation
+(function () {
+    'use strict'
+    var forms = document.querySelectorAll('.needs-validation')
+    Array.prototype.slice.call(forms).forEach(function (form) {
+        form.addEventListener('submit', function (event) {
+            if (!form.checkValidity()) {
+                event.preventDefault()
+                event.stopPropagation()
+            }
+            form.classList.add('was-validated')
+        }, false)
+    })
+})()
+</script>
+{% endblock %} 

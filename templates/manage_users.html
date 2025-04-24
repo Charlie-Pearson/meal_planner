@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+
+{% block title %}Manage Users - {{ current_user.accounts[0].name }}{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="row mb-4">
+        <div class="col">
+            <h2>Manage Users - {{ current_user.accounts[0].name }}</h2>
+        </div>
+        <div class="col text-end">
+            <a href="{{ url_for('invite_user') }}" class="btn btn-primary">
+                <i class="fas fa-user-plus"></i> Invite User
+            </a>
+        </div>
+    </div>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+                <div class="alert alert-{{ category }}">{{ message }}</div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+
+    <!-- Pending Invitations -->
+    <div class="card mb-4">
+        <div class="card-header">
+            <h3 class="card-title mb-0">Pending Invitations</h3>
+        </div>
+        <div class="card-body">
+            {% if pending_invites %}
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead>
+                            <tr>
+                                <th>Email</th>
+                                <th>Role</th>
+                                <th>Sent By</th>
+                                <th>Sent On</th>
+                                <th>Expires</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for invite in pending_invites %}
+                                <tr>
+                                    <td>{{ invite.email }}</td>
+                                    <td>{{ invite.role|title }}</td>
+                                    <td>{{ invite.invited_by.name }}</td>
+                                    <td>{{ invite.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                                    <td>{{ invite.expires_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                                    <td>
+                                        <form method="POST" action="{{ url_for('resend_invite', invite_id=invite.id) }}" class="d-inline">
+                                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                            <button type="submit" class="btn btn-sm btn-outline-primary">
+                                                <i class="fas fa-paper-plane"></i> Resend
+                                            </button>
+                                        </form>
+                                        <form method="POST" action="{{ url_for('cancel_invite', invite_id=invite.id) }}" class="d-inline">
+                                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                            <button type="submit" class="btn btn-sm btn-outline-danger" 
+                                                    onclick="return confirm('Are you sure you want to cancel this invitation?')">
+                                                <i class="fas fa-times"></i> Cancel
+                                            </button>
+                                        </form>
+                                    </td>
+                                </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            {% else %}
+                <p class="text-muted mb-0">No pending invitations.</p>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Current Users -->
+    <div class="card">
+        <div class="card-header">
+            <h3 class="card-title mb-0">Current Users</h3>
+        </div>
+        <div class="card-body">
+            <div class="table-responsive">
+                <table class="table table-hover">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Email</th>
+                            <th>Role</th>
+                            <th>Last Login</th>
+                            <th>Status</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for user in users %}
+                            <tr>
+                                <td>{{ user.name }}</td>
+                                <td>{{ user.email }}</td>
+                                <td>
+                                    {% if user.id != current_user.id %}
+                                        <form method="POST" action="{{ url_for('update_user_role', user_id=user.id) }}" class="d-inline">
+                                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                            <select name="role" class="form-select form-select-sm" onchange="this.form.submit()"
+                                                    {% if user.id == current_user.id %}disabled{% endif %}>
+                                                <option value="user" {% if user.role == 'user' %}selected{% endif %}>User</option>
+                                                <option value="admin" {% if user.role == 'admin' %}selected{% endif %}>Admin</option>
+                                            </select>
+                                        </form>
+                                    {% else %}
+                                        {{ user.role|title }}
+                                    {% endif %}
+                                </td>
+                                <td>{{ user.last_login.strftime('%Y-%m-%d %H:%M') if user.last_login else 'Never' }}</td>
+                                <td>
+                                    <span class="badge {% if user.is_active %}bg-success{% else %}bg-danger{% endif %}">
+                                        {{ 'Active' if user.is_active else 'Inactive' }}
+                                    </span>
+                                </td>
+                                <td>
+                                    {% if user.id != current_user.id %}
+                                        <form method="POST" action="{{ url_for('toggle_user_status', user_id=user.id) }}" class="d-inline">
+                                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                            <button type="submit" class="btn btn-sm {% if user.is_active %}btn-outline-danger{% else %}btn-outline-success{% endif %}"
+                                                    onclick="return confirm('Are you sure you want to {{ 'deactivate' if user.is_active else 'activate' }} this user?')">
+                                                <i class="fas {% if user.is_active %}fa-user-slash{% else %}fa-user-check{% endif %}"></i>
+                                                {{ 'Deactivate' if user.is_active else 'Activate' }}
+                                            </button>
+                                        </form>
+                                        <form method="POST" action="{{ url_for('remove_user', user_id=user.id) }}" class="d-inline">
+                                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                            <button type="submit" class="btn btn-sm btn-outline-danger"
+                                                    onclick="return confirm('Are you sure you want to remove this user? This action cannot be undone.')">
+                                                <i class="fas fa-user-minus"></i> Remove
+                                            </button>
+                                        </form>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %} 

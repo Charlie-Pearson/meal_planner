@@ -1,0 +1,53 @@
+<!-- meal_planner/templates/manage_aisles.html -->
+{% extends 'base.html' %}
+{% block title %}Manage Ingredient Aisles{% endblock %}
+{% block content %}
+<h2>Manage Ingredient Aisles</h2>
+<p>Assign or update the shopping aisle for known ingredients. Changes apply to all recipes and pantry items using that ingredient name.</p>
+
+<datalist id="aisle-suggestions">
+    {% for aisle in distinct_aisles %}<option value="{{ aisle }}">{% endfor %}
+</datalist>
+
+<div class="card">
+    <h3>Update Aisles</h3>
+    {% if ingredients %}
+    <form method="POST" action="{{ url_for('manage_aisles') }}" id="manage-aisles-form">
+        <button type="submit" class="update-all-aisles-btn">Update All Changed Aisles</button>
+        <table id="manage-aisles-table">
+            <thead><tr><th>Ingredient Name</th><th>Current Aisle</th><th>New Aisle</th></tr></thead>
+            <tbody>
+                {% for ingredient in ingredients %}
+                <tr>
+                    <td>{{ ingredient.name }}</td>
+                    <td>{{ ingredient.aisle if ingredient.aisle else 'Unknown' }}</td>
+                    <td>
+                        {# Store original aisle in hidden input for comparison on backend #}
+                        <input type="hidden" name="original_aisle_{{ ingredient.name }}" value="{{ ingredient.aisle if ingredient.aisle else 'None' }}">
+                        {# Input name includes ingredient name for backend parsing #}
+                        <input type="text" name="aisle_{{ ingredient.name }}" placeholder="Leave blank for 'Unknown'" value="{{ ingredient.aisle if ingredient.aisle else '' }}" list="aisle-suggestions" class="aisle-input">
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        <button type="submit" class="update-all-aisles-btn" style="margin-top: 15px;">Update All Changed Aisles</button>
+    </form>
+    {% else %}<p>No ingredients found in recipes yet.</p>{% endif %}
+</div>
+{% endblock %}
+
+{% block styles_extra %}
+<style>
+    .aisle-update-form input[type=text] { width: auto; flex-grow: 1; margin-bottom: 0; } /* Applied via class now */
+    .aisle-input { width: 100%; margin-bottom: 0 !important; } /* Ensure input takes cell width */
+    .update-all-aisles-btn { background-color: #28a745; } /* Green button */
+    .update-all-aisles-btn:hover { background-color: #218838; }
+    #manage-aisles-table{margin-top:15px;width:100%;border-collapse:collapse;}
+    #manage-aisles-table th,#manage-aisles-table td{padding:8px 12px;border:1px solid #ddd;text-align:left;vertical-align:middle;}
+    #manage-aisles-table th{background-color:#f2f2f2;}
+    #manage-aisles-table th:nth-child(1),#manage-aisles-table td:nth-child(1){width:40%;}
+    #manage-aisles-table th:nth-child(2),#manage-aisles-table td:nth-child(2){width:30%;}
+    #manage-aisles-table th:nth-child(3),#manage-aisles-table td:nth-child(3){width:30%;}
+</style>
+{% endblock %}

@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+
+{% block title %}Manage Invitations{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="row justify-content-center">
+        <div class="col-md-10">
+            <div class="card">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-center mb-4">
+                        <h2 class="card-title mb-0">Manage Invitations</h2>
+                        <a href="{{ url_for('invite_user') }}" class="btn btn-primary">
+                            <i class="fas fa-plus"></i> New Invitation
+                        </a>
+                    </div>
+                    
+                    {% with messages = get_flashed_messages(with_categories=true) %}
+                        {% if messages %}
+                            {% for category, message in messages %}
+                                <div class="alert alert-{{ category }}">{{ message }}</div>
+                            {% endfor %}
+                        {% endif %}
+                    {% endwith %}
+                    
+                    {% if invitations %}
+                        <div class="table-responsive">
+                            <table class="table table-hover">
+                                <thead>
+                                    <tr>
+                                        <th>Email</th>
+                                        <th>Role</th>
+                                        <th>Sent</th>
+                                        <th>Expires</th>
+                                        <th>Status</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for invitation in invitations %}
+                                        <tr>
+                                            <td>{{ invitation.email }}</td>
+                                            <td>
+                                                <span class="badge bg-{{ 'primary' if invitation.role == 'admin' else 'secondary' }}">
+                                                    {{ invitation.role }}
+                                                </span>
+                                            </td>
+                                            <td>{{ invitation.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                                            <td>{{ invitation.expires_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                                            <td>
+                                                {% if invitation.is_expired() %}
+                                                    <span class="badge bg-danger">Expired</span>
+                                                {% elif invitation.is_accepted %}
+                                                    <span class="badge bg-success">Accepted</span>
+                                                {% else %}
+                                                    <span class="badge bg-warning">Pending</span>
+                                                {% endif %}
+                                            </td>
+                                            <td>
+                                                {% if not invitation.is_accepted and not invitation.is_expired() %}
+                                                    <form method="POST" action="{{ url_for('resend_invitation', invitation_id=invitation.id) }}" class="d-inline">
+                                                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                                        <button type="submit" class="btn btn-sm btn-outline-primary">
+                                                            <i class="fas fa-redo"></i> Resend
+                                                        </button>
+                                                    </form>
+                                                    <form method="POST" action="{{ url_for('cancel_invitation', invitation_id=invitation.id) }}" class="d-inline">
+                                                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                                        <button type="submit" class="btn btn-sm btn-outline-danger" 
+                                                                onclick="return confirm('Are you sure you want to cancel this invitation?')">
+                                                            <i class="fas fa-times"></i> Cancel
+                                                        </button>
+                                                    </form>
+                                                {% endif %}
+                                            </td>
+                                        </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    {% else %}
+                        <div class="text-center py-4">
+                            <p class="text-muted mb-0">No invitations found.</p>
+                        </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %} 

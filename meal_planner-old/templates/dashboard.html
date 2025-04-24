@@ -1,0 +1,214 @@
+<!-- meal_planner/templates/dashboard.html -->
+{% extends 'base.html' %}
+
+{% block title %}Meal Plan Dashboard{% endblock %}
+
+{% block content %}
+<h2>Meal Plan Dashboard</h2>
+
+<form method="POST" action="{{ url_for('dashboard') }}" id="meal-plan-form">
+    {# Hidden input for lock all flag #}
+    <input type="hidden" name="lock_all_flag" id="lock_all_flag" value="false">
+
+    <div class="card plan-controls">
+        <label for="num_people">Meal Plan For How Many People?</label>
+        <input type="number" id="num_people" name="num_people" value="{{ num_people }}" min="1" style="width: 60px;">
+        <button type="submit" style="margin-left: 20px;">Generate / Update Plan</button>
+        <button type="button" id="lock-all-btn" style="margin-left: 10px; background-color: #ffc107; color: #333;">Lock All</button>
+    </div>
+
+    <div class="card lock-info">
+        <h3>Lock Types</h3>
+        <ul class="lock-types-list">
+            <li><span class="lock-indicator manual-lock"></span> Manual Entry - Always locked</li>
+            <li><span class="lock-indicator user-lock"></span> User Lock - Locked by checkbox</li>
+            <li><span class="lock-indicator default-lock"></span> Default Lock - Default breakfast</li>
+        </ul>
+    </div>
+
+    <h3>Current Meal Plan</h3>
+    <p>Select a recipe or type directly into a slot to manually set a meal (this locks it). Use checkboxes to lock/unlock generated meals or leftovers. Then click 'Generate/Update Plan'.</p>
+
+    <div class="meal-plan-table-container">
+    <table>
+        <thead>
+            <tr>
+                <th>Day</th>
+                {% for meal_type in meal_types %}
+                <th>{{ meal_type }}</th>
+                {% endfor %}
+            </tr>
+        </thead>
+        <tbody>
+            {% for day in days %}
+            <tr>
+                <td><b>{{ day }}</b></td>
+                {% for meal_type in meal_types %}
+                    {% set slot_id = day + '_' + meal_type %}
+                    {% set meal_info = plan[day][meal_type] %}
+                    {% set current_lock_info = locked_meals.get(slot_id) %}
+                    {% set is_display_locked = (meal_info.status == 'locked') or (current_lock_info and current_lock_info.manual) or meal_info.default_lock %}
+                    {% set lock_type = 'default' if meal_info.default_lock else 'manual' if current_lock_info and current_lock_info.manual else 'user' if is_display_locked else None %}
+
+                    <td class="meal-slot meal-status-{{ meal_info.status if meal_info else 'empty' }} {% if lock_type %}meal-locked-{{ lock_type }}{% endif %}">
+                        <div class="meal-slot-content">
+                            {% if meal_info and (meal_info.recipe or meal_info.is_manual_entry) %}
+                                {% if meal_info.is_manual_entry %}
+                                    <h4>{{ meal_info.manual_text }}</h4>
+                                    <p><b>(Manual Entry)</b></p>
+                                    <input type="hidden" name="recipeid_{{ slot_id }}" value="-1">
+                                {% else %}
+                                    {% set recipe = meal_info.recipe %}
+                                    <h4>{{ recipe.name }}</h4>
+                                    <p><i>Serves: {{ recipe.servings }}</i></p>
+                                    {% if meal_info.status == 'leftover' %}
+                                        <p><b>(Leftovers)</b></p>
+                                    {% elif meal_info.status == 'locked' %}
+                                        <p><b>(Locked {% if meal_info.locked_by_main %}by user{% elif meal_info.default_lock %}by default{% endif %})</b></p>
+                                    {% endif %}
+                                    <input type="hidden" name="recipeid_{{ slot_id }}" value="{{ recipe.id }}">
+                                {% endif %}
+
+                                {# Lock Checkbox with improved UI #}
+                                <div class="lock-control">
+                                    <input type="checkbox" name="lock_{{ slot_id }}" id="lock_{{ slot_id }}"
+                                           {% if is_display_locked %}checked{% endif %}
+                                           {% if meal_info.is_manual_entry %}disabled title="Manual entries are always locked. Clear selection below to unlock."{% endif %}
+                                           class="lock-checkbox {% if lock_type %}lock-type-{{ lock_type }}{% endif %}"
+                                           >
+                                    <label for="lock_{{ slot_id }}" class="lock-label {% if lock_type %}lock-type-{{ lock_type }}{% endif %}">
+                                        Lock
+                                        {% if lock_type == 'default' %}
+                                            <span class="lock-badge">Default</span>
+                                        {% elif lock_type == 'manual' %}
+                                            <span class="lock-badge">Manual</span>
+                                        {% endif %}
+                                    </label>
+                                </div>
+
+                            {% else %}
+                                {% if meal_info and meal_info.status == 'deleted' %}
+                                    <p><i>-- Recipe Deleted --</i></p>
+                                {% else %}
+                                    <p><i>-- Empty --</i></p>
+                                    {% if meal_info and meal_info.status == 'empty'%}
+                                        <p><small>(No suitable recipe found/generated)</small></p>
+                                    {% endif %}
+                                {% endif %}
+                                <input type="hidden" name="recipeid_{{ slot_id }}" value="">
+                            {% endif %}
+                        </div>
+
+                        {# Manual Entry Controls with improved UI #}
+                        <div class="manual-entry-controls">
+                            <select name="manual_select_{{ slot_id }}" id="manual_select_{{ slot_id }}" onchange="handleManualSelect(this)" class="manual-select">
+                                <option value="0" {% if not current_lock_info or not current_lock_info.manual %}selected{% endif %}>-- Generate Randomly --</option>
+                                <option value="-1" {% if current_lock_info and current_lock_info.recipe_id == -1 %}selected{% endif %}>** Enter Text Below **</option>
+                                <option value="" disabled>------------------</option>
+                                {% for r in all_recipes %}
+                                <option value="{{ r.id }}" {% if current_lock_info and current_lock_info.recipe_id == r.id %}selected{% endif %}>{{ r.name }}</option>
+                                {% endfor %}
+                            </select>
+                            <input type="text" name="manual_text_{{ slot_id }}" id="manual_text_{{ slot_id }}" placeholder="Or type custom meal here..."
+                                   class="manual-text-input {% if current_lock_info and current_lock_info.recipe_id == -1 %}visible{% else %}hidden{% endif %}"
+                                   value="{{ current_lock_info.text if current_lock_info and current_lock_info.recipe_id == -1 else '' }}">
+                        </div>
+                    </td>
+                {% endfor %}
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </div>
+</form>
+
+<style>
+    .manual-text-input {
+        margin-top: 5px;
+    }
+    .manual-text-input.hidden {
+        display: none;
+    }
+    .manual-text-input.visible {
+        display: block;
+    }
+</style>
+{% endblock %}
+
+{% block scripts_extra %}
+<script>
+    function handleManualSelect(selectElement) {
+        const slotId = selectElement.id.replace('manual_select_', '');
+        const textInput = document.getElementById(`manual_text_${slotId}`);
+        const lockCheckbox = document.getElementById(`lock_${slotId}`);
+        const cell = selectElement.closest('td');
+
+        if (selectElement.value === '-1') {
+            // Manual text entry selected
+            textInput.style.display = 'block';
+            if(lockCheckbox) {
+                lockCheckbox.checked = true;
+                lockCheckbox.disabled = true;
+                lockCheckbox.title = "Manual entries are always locked. Clear selection below to unlock.";
+                cell.classList.add('meal-locked-manual');
+                cell.classList.remove('meal-locked-user', 'meal-locked-default');
+            }
+        } else if (selectElement.value === '0') {
+            // Generate randomly selected
+            textInput.style.display = 'none';
+            textInput.value = '';
+            if(lockCheckbox) {
+                lockCheckbox.disabled = false;
+                lockCheckbox.title = "";
+                lockCheckbox.checked = false;
+                cell.classList.remove('meal-locked-user', 'meal-locked-manual', 'meal-locked-default');
+            }
+        } else {
+            // Specific recipe selected
+            textInput.style.display = 'none';
+            textInput.value = '';
+            if(lockCheckbox) {
+                lockCheckbox.disabled = false;
+                lockCheckbox.title = "";
+                lockCheckbox.checked = true;
+                cell.classList.add('meal-locked-user');
+                cell.classList.remove('meal-locked-manual', 'meal-locked-default');
+            }
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        // Initialize all manual select dropdowns
+        document.querySelectorAll('select[id^="manual_select_"]').forEach(select => {
+            handleManualSelect(select);
+        });
+
+        // Handle lock all button
+        const lockAllBtn = document.getElementById('lock-all-btn');
+        const lockAllFlagInput = document.getElementById('lock_all_flag');
+        const form = document.getElementById('meal-plan-form');
+
+        if (lockAllBtn) {
+            lockAllBtn.addEventListener('click', () => {
+                lockAllFlagInput.value = 'true';
+                form.submit();
+            });
+        }
+
+        // Add event listener for manual text inputs
+        document.querySelectorAll('input[id^="manual_text_"]').forEach(input => {
+            input.addEventListener('input', function() {
+                const slotId = this.id.replace('manual_text_', '');
+                const select = document.getElementById(`manual_select_${slotId}`);
+                if (this.value.trim() === '') {
+                    select.value = '0';
+                    handleManualSelect(select);
+                } else {
+                    select.value = '-1';
+                    handleManualSelect(select);
+                }
+            });
+        });
+    });
+</script>
+{% endblock %}
