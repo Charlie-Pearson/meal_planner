@@ -11,12 +11,16 @@ from datetime import datetime, timedelta, UTC
 import re
 import socket
 import time
+import json
+import uuid
+from functools import wraps
+from pathlib import Path
 
 # --- Third-Party Imports ---
-from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify, abort
+from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify, abort, send_file
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy.sql import func
-from sqlalchemy.orm import joinedload # Explicit import for clarity
+from sqlalchemy.orm import joinedload, aliased # Explicit import for clarity
 from flask_migrate import Migrate
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
 from flask_wtf.csrf import CSRFProtect
@@ -26,6 +30,9 @@ from wtforms.validators import DataRequired, Email
 import bcrypt
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_socketio import SocketIO, emit, join_room, leave_room
+from sqlalchemy import or_, and_, func, text
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.sql import exists
 
 # --- Forms ---
 class LoginForm(FlaskForm):
@@ -54,8 +61,11 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False # Good practice
 # Initialize CSRF protection
 csrf = CSRFProtect(app)
 
+# Initialize SocketIO
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+
 # --- Global Constants ---
-days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+ALL_DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 meal_types = ["Breakfast", "Lunch", "Dinner"]
 
 # --- Database and Migration Initialization ---
@@ -92,9 +102,9 @@ class User(UserMixin, db.Model):
     accounts = db.relationship('Account', secondary='account_user', 
                              back_populates='users',
                              lazy='dynamic',
-                             overlaps="account_users")
+                             overlaps="account_users,user")
     account_users = db.relationship('AccountUser', back_populates='user',
-                                  overlaps="accounts")
+                                  overlaps="accounts,account")
     
     def set_password(self, password):
         salt = bcrypt.gensalt()
@@ -111,9 +121,9 @@ class Account(db.Model):
     users = db.relationship('User', secondary='account_user', 
                           back_populates='accounts',
                           lazy='dynamic',
-                          overlaps="account_users")
+                          overlaps="account_users,account")
     account_users = db.relationship('AccountUser', back_populates='account',
-                                  overlaps="users")
+                                  overlaps="users,user")
     
     def __init__(self, name):
         self.name = name
@@ -402,6 +412,9 @@ ShoppingListDict = Dict[str, List[Dict[str, Any]]] # Aisle -> List of Item Dicts
 PlanIdsDict = Dict[str, Dict[str, Dict[str, Any]]] # day -> meal_type -> recipe_id or manual text
 
 def generate_shopping_list_data(plan_ids: PlanIdsDict) -> ShoppingListDict:
+
+    flash('Generate shopping list data.', 'success')
+            
     """
     Generates shopping list data based on the meal plan IDs.
     Aggregates ingredients across unique recipes in the plan,
@@ -523,10 +536,13 @@ def toggle_meal_lock():
     
     return jsonify({'success': True})
 
-def generate_meal_plan(num_people: int, locked_meals: LockedMealsDict) -> PlanIdsDict:
+def generate_meal_plan(num_people: int, locked_meals: LockedMealsDict, days: Optional[List[str]] = None) -> PlanIdsDict:
     """
-    Generates a 7-day meal plan, considering locked meals and user default settings for each meal type.
+    Generates a meal plan for the specified days, considering locked meals and user default settings for each meal type.
+    If days is None, defaults to all 7 days (Monday-Sunday).
     """
+    if days is None:
+        days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
     plan_ids: PlanIdsDict = {day: {meal_type: None for meal_type in meal_types} for day in days}
 
     # Fetch user default meal settings
@@ -760,6 +776,86 @@ def generate_meal_plan(num_people: int, locked_meals: LockedMealsDict) -> PlanId
     return plan_ids
 # --- Routes (MUST come after app, db, models, helpers are defined) ---
 
+@app.route('/update-shopping-item-checked', methods=['POST'])
+@login_required
+@csrf.exempt  # Exempt this route from CSRF protection since we handle it manually
+def update_shopping_item_checked():
+    """Update the checked status of a shopping list item."""
+    try:
+        # Verify CSRF token
+        token = request.headers.get('X-CSRFToken')
+        if not token:
+            return jsonify({'success': False, 'error': 'CSRF token missing'}), 400
+            
+        data = request.get_json()
+        if not data or 'item_id' not in data or 'is_checked' not in data:
+            return jsonify({'success': False, 'error': 'Invalid request data'}), 400
+
+        try:
+            item_id = int(data['item_id'])
+        except (TypeError, ValueError):
+            return jsonify({'success': False, 'error': 'Invalid item ID'}), 400
+            
+        is_checked = bool(data['is_checked'])
+        
+        # Get current user's account
+        account = current_user.accounts.first()
+        if not account:
+            return jsonify({'success': False, 'error': 'No account found'}), 404
+
+        # Get the item and verify ownership
+        item = ShoppingListItem.query.get(item_id)
+        if not item:
+            return jsonify({'success': False, 'error': 'Item not found'}), 404
+        if item.account_id != account.id:
+            return jsonify({'success': False, 'error': 'Unauthorized'}), 403
+
+        # Update the item
+        item.is_checked = is_checked
+        item.updated_at = datetime.utcnow()
+        db.session.commit()
+
+        # Verify the update
+        db.session.refresh(item)
+        if item.is_checked != is_checked:
+            return jsonify({'success': False, 'error': 'Failed to update item'}), 500
+
+        # Emit update to all users in the same account
+        room = f'shopping_list_{account.id}'
+        app.logger.debug(f'[WEBSOCKET] Emitting item_updated to room {room}')
+        socketio.emit('item_updated', {
+            'item_id': item_id,
+            'is_checked': item.is_checked,
+            'updated_at': item.updated_at.isoformat()
+        }, room=room)
+
+        return jsonify({
+            'success': True,
+            'item_id': item_id,
+            'is_checked': item.is_checked
+        })
+
+    except Exception as e:
+        app.logger.error(f"Error updating shopping item: {str(e)}")
+        return jsonify({'success': False, 'error': 'Server error'}), 500
+
+    account = current_user.accounts.first()
+    if not account:
+        app.logger.error('[DEBUG-update-item] No account found for current user')
+        return jsonify({'success': False, 'error': 'No account found'}), 400
+
+    item = ShoppingListItem.query.get(item_id)
+    if not item or item.account_id != account.id:
+        app.logger.error(f'[DEBUG-update-item] Item not found or access denied for item_id={item_id}')
+        return jsonify({'success': False, 'error': 'Item not found'}), 404
+
+    item.is_checked = bool(is_checked)
+    db.session.commit()
+    print(f"[CONSOLE] Shopping list item update: item_id={item_id}, is_checked={item.is_checked}")
+    app.logger.info(f'[DEBUG-update-item] Updated item_id={item_id} is_checked={is_checked}')
+    return jsonify({'success': True})
+
+
 from flask import request, jsonify
 from flask_login import login_required, current_user
 import logging
@@ -794,17 +890,33 @@ def dashboard():
     if 'locked_meals' not in session:
         sync_session_locks_with_db()
 
+    # Fetch user meal plan settings
+    account = current_user.accounts.first()
+    settings = getattr(account, 'settings', None)
+    meal_plan_start_day = getattr(settings, 'meal_plan_start_day', 'Monday') if settings else 'Monday'
+    meal_plan_duration = getattr(settings, 'meal_plan_duration', 7) if settings else 7
+    num_people = getattr(settings, 'num_people', 2) if settings else 2
+    try:
+        meal_plan_duration = int(meal_plan_duration)
+    except Exception:
+        meal_plan_duration = 7
+    if meal_plan_duration < 1 or meal_plan_duration > 31:
+        meal_plan_duration = 7
+    try:
+        num_people = int(num_people)
+    except Exception:
+        num_people = 2
+    if num_people < 1:
+        num_people = 2
+
+    # Compute the days for the plan, starting from meal_plan_start_day
+    start_idx = ALL_DAYS.index(meal_plan_start_day) if meal_plan_start_day in ALL_DAYS else 0
+    days = [ALL_DAYS[(start_idx + i) % 7] for i in range(meal_plan_duration)]
+
     # Handle POST request (form submission)
     if request.method == 'POST':
-        # Get form data
-        try:
-            num_people = int(request.form.get('num_people', session['num_people']))
-            if num_people < 1:
-                raise ValueError("Number of people must be at least 1")
-            session['num_people'] = num_people
-        except (ValueError, TypeError):
-            flash("Invalid number of people. Using previous value.", "warning")
-            num_people = session['num_people']
+        # No longer handle num_people from dashboard form; it is now only set via settings page
+        pass
 
         # Check if this is a "Lock All" request
         lock_all = request.form.get('lock_all_flag') == 'true'
@@ -924,17 +1036,22 @@ def dashboard():
         plan_ids = generate_meal_plan(session['num_people'], session['locked_meals'])
         session['current_plan_ids'] = plan_ids
         session.modified = True
+        flash("Meal plan regenerated.", "success")
 
         # Clear shopping list state as the plan has changed
         session.pop('shopping_list_state', None)
 
-        flash("Meal plan regenerated.", "success")
+        # Regenerate the shopping list
+        generate_shopping_list()
+        flash("Shopping list regenerated.", "success")
+
         return redirect(url_for('dashboard'))
 
     # --- GET Request Rendering ---
     # Ensure a plan exists in the session
     if 'current_plan_ids' not in session:
-        session['current_plan_ids'] = generate_meal_plan(session['num_people'], session.get('locked_meals', {}))
+        # Generate plan with correct days and duration
+        session['current_plan_ids'] = generate_meal_plan(num_people, session.get('locked_meals', {}), days=days)
         session.modified = True
 
     plan_ids_from_session: PlanIdsDict = session['current_plan_ids']
@@ -1012,7 +1129,7 @@ def dashboard():
 
     return render_template('dashboard.html',
                            plan=plan_for_template,
-                           num_people=session['num_people'],
+                           num_people=num_people,
                            locked_meals=active_locked_meals_state, # Pass the raw lock state for form defaults
                            days=days,
                            meal_types=meal_types,
@@ -1412,11 +1529,6 @@ def delete_recipe(recipe_id: int):
 @login_required
 def shopping_list():
     app.logger.debug("[DEBUG-shopping-list] Entered shopping_list route")
-    # Always regenerate the shopping list from current session meal plan before displaying
-    try:
-        generate_shopping_list()
-    except Exception as e:
-        app.logger.error(f"[DEBUG-shopping-list] Error regenerating shopping list: {e}")
     if request.method == 'POST':
         data = request.get_json()
         if not data:
@@ -2317,7 +2429,9 @@ def settings():
 @app.route('/generate_meal_plan', methods=['GET', 'POST'])
 @login_required
 def generate_meal_plan_route():
+    flash("Entered Generate_meal_plan_route function","success")
     if request.method == 'POST':
+        flash("Entered Generate_meal_plan_route function POST","success")
         # Get form data
         start_date = request.form.get('start_date')
         end_date = request.form.get('end_date')
@@ -2373,6 +2487,14 @@ def generate_meal_plan_route():
                 'meals': plan_ids
             }
             
+            # Regenerate the shopping list
+            try:
+                generate_shopping_list()
+                app.logger.debug("Shopping list regenerated after meal plan update")
+            except Exception as e:
+                app.logger.error(f"Error regenerating shopping list: {e}")
+                flash('Shopping list may be out of date. Please refresh it manually.', 'warning')
+            
             flash('Meal plan generated successfully! Please review and confirm.', 'success')
             return redirect(url_for('meal_plan'))
             
@@ -2381,7 +2503,15 @@ def generate_meal_plan_route():
             flash(f'Error generating meal plan: {str(e)}', 'error')
             return redirect(url_for('dashboard'))
     
-    return render_template('generate_meal_plan.html')
+    # Get recipes for default meal selection
+    breakfast_recipes = Recipe.query.filter_by(is_breakfast=True).all()
+    lunch_recipes = Recipe.query.filter_by(is_lunch=True).all()
+    dinner_recipes = Recipe.query.filter_by(is_dinner=True).all()
+    
+    return render_template('generate_meal_plan.html', 
+                         breakfast_recipes=breakfast_recipes,
+                         lunch_recipes=lunch_recipes,
+                         dinner_recipes=dinner_recipes)
 
 @app.route('/generate_meal_plan', methods=['POST'])
 @login_required
@@ -2492,9 +2622,36 @@ def generate_meal_plan_post():
         app.logger.debug(f"[DEBUG-gmpost] session['current_plan_ids']: {session.get('current_plan_ids')}")
         print(f"[PRINT-gmpost] plan_ids after form submission: {plan_ids}")
 
-        # Save meal plan to DB (migrated from confirm_meal_plan)
-        from datetime import datetime
-        start_date = datetime.strptime(request.form['start_date'], '%Y-%m-%d').date()
+        # Regenerate shopping list based on new meal plan
+        try:
+            # Get the shopping list data
+            shopping_list_data = generate_shopping_list_data(plan_ids)
+            
+            # Clear existing shopping list items
+            ShoppingListItem.query.filter_by(account_id=account.id).delete()
+            
+            # Add new items to the shopping list
+            for aisle, items in shopping_list_data.items():
+                for item in items:
+                    shopping_item = ShoppingListItem(
+                        account_id=account.id,
+                        name=item['name'],
+                        quantity=item.get('quantity', 1),
+                        unit=item.get('unit', ''),
+                        aisle=aisle,
+                        is_checked=False
+                    )
+                    db.session.add(shopping_item)
+            
+            db.session.commit()
+            app.logger.debug(f"[DEBUG-gmpost] Successfully regenerated shopping list")
+            flash('Meal plan and shopping list generated successfully!', 'success')
+        except Exception as e:
+            db.session.rollback()
+            app.logger.error(f"[ERROR-gmpost] Failed to regenerate shopping list: {str(e)}")
+            flash('Meal plan generated but shopping list may be out of date.', 'warning')
+            
+        return redirect(url_for('meal_plan'))
         end_date = datetime.strptime(request.form['end_date'], '%Y-%m-%d').date()
         account_id = current_user.accounts[0].id
         meal_plan = MealPlan(
@@ -2543,6 +2700,8 @@ def generate_shopping_list():
     print("[PRINT-gsl] Called generate_shopping_list()")
     app.logger.debug("[DEBUG-gsl] Called generate_shopping_list()")
     app.logger.debug("[DEBUG-gsl] generate_shopping_list() called.")
+
+    flash("Generating shopping list...",'success')
     # Get the current user's account
     account = current_user.accounts.first()
     app.logger.debug(f"[DEBUG-gsl] account: {account}")
@@ -2674,34 +2833,49 @@ def regenerate_shopping_list():
     
     return redirect(url_for('shopping_list'))
 
+# --- WebSocket Event Handlers ---
+@socketio.on('connect')
+def handle_connect():
+    app.logger.debug(f'[WEBSOCKET] Client connected: {request.sid}')
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    app.logger.debug(f'[WEBSOCKET] Client disconnected: {request.sid}')
+
+@socketio.on('join_shopping_list')
+def on_join_shopping_list():
+    """When a user opens the shopping list page"""
+    account = current_user.accounts.first()
+    if account:
+        room = f'shopping_list_{account.id}'
+        join_room(room)
+        app.logger.debug(f'[WEBSOCKET] Client {request.sid} joined room {room}')
+
+@socketio.on('leave_shopping_list')
+def on_leave_shopping_list():
+    """When a user leaves the shopping list page"""
+    account = current_user.accounts.first()
+    if account:
+        room = f'shopping_list_{account.id}'
+        leave_room(room)
+        app.logger.debug(f'[WEBSOCKET] Client {request.sid} left room {room}')
+
 # --- Main Execution ---
 if __name__ == '__main__':
     # Create database tables if they don't exist.
-    # Needs the application context.
-    with app.app_context():
-        # Check if the database file exists before creating tables
-        # This is a simple check; migrations are better for managing changes.
-        if not os.path.exists(DATABASE_PATH):
-            print("Database file not found, creating tables...")
-            db.create_all()
-            print("Tables created.")
-        else:
-            print("Database file found.")
-            # Check if tables exist
-            inspector = db.inspect(db.engine)
-            table_names = inspector.get_table_names()
-            print(f"Existing tables: {table_names}")
-            
-            # If no tables exist, create them
-            if not table_names:
-                print("No tables found, creating tables...")
+    def create_tables():
+        with app.app_context():
+            # Check if the database file exists before creating tables
+            # This is a simple check; migrations are better for managing changes.
+            if not os.path.exists(DATABASE_PATH):
+                print("Database file not found, creating tables...")
                 db.create_all()
                 print("Tables created.")
             else:
                 print("Tables already exist.")
 
-    # Run the Flask development server
+    # Run the Flask development server with Socket.IO support
     # host='0.0.0.0' makes it accessible on your network
     # debug=True enables interactive debugger and auto-reloading (DISABLE IN PRODUCTION)
-    print("Starting Flask development server...")
-    app.run(host='0.0.0.0', port=5000, debug=True) # Set debug=False for production!
+    print("Starting Flask development server with Socket.IO support...")
+    socketio.run(app, host='0.0.0.0', port=5000, debug=True) # Set debug=False for production!
