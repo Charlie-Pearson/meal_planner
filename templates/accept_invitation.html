@@ -12,9 +12,11 @@
                     
                     {% with messages = get_flashed_messages(with_categories=true) %}
                         {% if messages %}
-                            {% for category, message in messages %}
-                                <div class="alert alert-{{ category }}">{{ message }}</div>
-                            {% endfor %}
+                            <script>
+                                {% for category, message in messages %}
+                                    console.log("{{ category }}:", {{ message|tojson }});
+                                {% endfor %}
+                            </script>
                         {% endif %}
                     {% endwith %}
                     
