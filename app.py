@@ -413,8 +413,6 @@ ShoppingListDict = Dict[str, List[Dict[str, Any]]] # Aisle -> List of Item Dicts
 PlanIdsDict = Dict[str, Dict[str, Dict[str, Any]]] # day -> meal_type -> recipe_id or manual text
 
 def generate_shopping_list_data(plan_ids: PlanIdsDict) -> ShoppingListDict:
-
-    flash('Generate shopping list data.', 'success')
             
     """
     Generates shopping list data based on the meal plan IDs.
@@ -1022,10 +1020,8 @@ def dashboard():
         try:
             for slot_id, lock_info in new_locked_meals.items():
                 update_persistent_lock(slot_id, lock_info)
-            flash("Meal locks updated successfully.", "success")
         except Exception as e:
             app.logger.error(f"Error updating persistent locks: {e}")
-            flash("Error updating meal locks. Please try again.", "error")
 
         # Sync session with database locks
         sync_session_locks_with_db()
@@ -1037,14 +1033,12 @@ def dashboard():
         plan_ids = generate_meal_plan(session['num_people'], session['locked_meals'])
         session['current_plan_ids'] = plan_ids
         session.modified = True
-        flash("Meal plan regenerated.", "success")
 
         # Clear shopping list state as the plan has changed
         session.pop('shopping_list_state', None)
 
         # Regenerate the shopping list
         generate_shopping_list()
-        flash("Shopping list regenerated.", "success")
 
         return redirect(url_for('dashboard'))
 
@@ -2430,9 +2424,7 @@ def settings():
 @app.route('/generate_meal_plan', methods=['GET', 'POST'])
 @login_required
 def generate_meal_plan_route():
-    flash("Entered Generate_meal_plan_route function","success")
     if request.method == 'POST':
-        flash("Entered Generate_meal_plan_route function POST","success")
         # Get form data
         start_date = request.form.get('start_date')
         end_date = request.form.get('end_date')
@@ -2709,7 +2701,6 @@ def generate_shopping_list():
     app.logger.debug("[DEBUG-gsl] Called generate_shopping_list()")
     app.logger.debug("[DEBUG-gsl] generate_shopping_list() called.")
 
-    flash("Generating shopping list...",'success')
     # Get the current user's account
     account = current_user.accounts.first()
     app.logger.debug(f"[DEBUG-gsl] account: {account}")
