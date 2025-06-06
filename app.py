@@ -382,7 +382,8 @@ def update_persistent_lock(slot_id: str, lock_info: Optional[Dict[str, Any]]) ->
                 day=day,
                 meal_type=meal_type,
                 recipe_id=lock_info.get('recipe_id'),
-                manual_text=lock_info.get('manual_text'),
+                # Persist manual text using the same key used in the session
+                manual_text=lock_info.get('text'),
                 is_manual=lock_info.get('manual', False),
                 is_default=lock_info.get('default', False),
                 lock_type=lock_info.get('lock_type', 'user')  # Add lock type with default 'user'
@@ -2573,7 +2574,14 @@ def generate_meal_plan_post():
                     recipe_id = locked_meals[(current_date, meal_type)]
                 else:
                     # Get available recipes for this meal type
-                    available_recipes = [r for r in recipes if r.meal_type == meal_type]
+                    available_recipes = [
+                        r for r in recipes
+                        if (
+                            (meal_type == 'Breakfast' and r.is_breakfast) or
+                            (meal_type == 'Lunch' and r.is_lunch) or
+                            (meal_type == 'Dinner' and r.is_dinner)
+                        )
+                    ]
                     if not available_recipes:
                         continue
                     
