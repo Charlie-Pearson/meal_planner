@@ -43,7 +43,7 @@
     </fieldset>
     <div><label for="method">Method (Optional):</label><textarea id="method" name="method" rows="15">{{ request.form.get('method', recipe.method) }}</textarea></div>
     <button type="submit">Update Recipe</button>
-    <a href="{{ url_for('dashboard') }}" class="button-link">Cancel</a>
+    <a href="{{ url_for('dashboard.index') }}" class="button-link">Cancel</a>
 </form>
 {% endblock %}
 {% block scripts_extra %}
