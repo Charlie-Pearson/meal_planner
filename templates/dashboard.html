@@ -19,7 +19,7 @@
   {% endif %}
 {% endwith %}
 
-<form method="POST" action="{{ url_for('dashboard') }}" id="meal-plan-form">
+<form method="POST" action="{{ url_for('dashboard.index') }}" id="meal-plan-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     {# Hidden input for lock all flag #}
     <input type="hidden" name="lock_all_flag" id="lock_all_flag" value="false">

@@ -1,7 +1,8 @@
-from app import app, db
+from app import create_app, db
 from datetime import datetime
 
 def migrate_database():
+    app = create_app()
     """Add updated_at columns to tables that need them."""
     with app.app_context():
         # Check if the column exists in ShoppingListItem
