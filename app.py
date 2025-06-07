@@ -429,7 +429,8 @@ def generate_shopping_list_data(plan_ids: PlanIdsDict) -> ShoppingListDict:
     unique_recipe_ids = set()
     for day, meals in plan_ids.items():
         for meal_type, meal_info in meals.items():
-            if meal_info and meal_info.get('recipe_id') not in (None, -1):
+            if (meal_info and meal_info.get('recipe_id') not in (None, -1)
+                    and meal_info.get('status') != 'leftover'):
                 unique_recipe_ids.add(meal_info['recipe_id'])
     app.logger.debug(f"[SHOPLIST] Unique recipe IDs for aggregation: {unique_recipe_ids}")
     # --- 2. Aggregate ingredients ---
@@ -537,6 +538,65 @@ def toggle_meal_lock():
     
     return jsonify({'success': True})
 
+def get_next_day(current_day: str, days: List[str]) -> Optional[str]:
+    """Helper to get the next day name in the week list."""
+    try:
+        idx = days.index(current_day)
+    except ValueError:
+        return None
+    if idx + 1 < len(days):
+        return days[idx + 1]
+    return None
+
+
+def assign_leftovers(plan_ids: PlanIdsDict, current_day: str, meal_type: str, leftovers: int, num_people: int,
+                     current_recipe_id: int, days: List[str]) -> None:
+    """Assign leftover servings to subsequent meal slots."""
+    next_day = get_next_day(current_day, days)
+    while leftovers >= num_people and next_day:
+        slot_info = plan_ids.get(next_day, {}).get(meal_type)
+
+        # Skip if slot exists and is locked (user or default)
+        if slot_info is not None:
+            if slot_info.get('locked_by_main', False) or slot_info.get('default_lock', False):
+                next_day = get_next_day(next_day, days)
+                continue
+            # Also skip if this slot already has a leftover assigned
+            if slot_info.get('status') == 'leftover':
+                next_day = get_next_day(next_day, days)
+                continue
+
+        plan_ids[next_day][meal_type] = {
+            'recipe_id': current_recipe_id,
+            'status': 'leftover',
+            'manual_text': f"Leftover from {current_day}'s {meal_type}",
+            'locked_by_main': False,
+            'locked_by_user': False
+        }
+
+        slot_id = f"{next_day}_{meal_type}"
+
+        # Persist leftover lock in DB and update session state
+        lock_info = {
+            'recipe_id': current_recipe_id,
+            'manual': False,
+            'default': False,
+            'lock_type': 'leftover',
+            'text': f"Leftover from {current_day}'s {meal_type}"
+        }
+        update_persistent_lock(slot_id, lock_info)
+
+        session_locks = session.get('locked_meals', {})
+        session_locks[slot_id] = lock_info
+        session['locked_meals'] = session_locks
+        session.modified = True
+
+        leftovers -= num_people
+        next_day = get_next_day(next_day, days)
+
+    return None
+
+
 def generate_meal_plan(num_people: int, locked_meals: LockedMealsDict, days: Optional[List[str]] = None) -> PlanIdsDict:
     """
     Generates a meal plan for the specified days, considering locked meals and user default settings for each meal type.
@@ -583,8 +643,6 @@ def generate_meal_plan(num_people: int, locked_meals: LockedMealsDict, days: Opt
 
     # Handle locked meals from session
     active_locks = {}  # (Coords) -> recipe_id
-    additional_locks = {}  # For leftovers
-    leftovers_to_assign = {}  # For leftovers
     for slot_id, lock_info in locked_meals.items():
         try:
             day, meal_type = slot_id.split('_', 1)
@@ -610,16 +668,26 @@ def generate_meal_plan(num_people: int, locked_meals: LockedMealsDict, days: Opt
             elif recipe_id is not None:
                 # Check if the locked recipe actually exists in the DB
                 if db.session.get(Recipe, recipe_id):
-                    active_locks[current_coords] = recipe_id
-                    plan_ids[day][meal_type] = {
-                        'recipe_id': recipe_id,
-                        'status': 'locked',
-                        'locked_by_main': True,  # User explicitly locked this
-                        'default_lock': False  # Overrides default if applicable
-                    }
-                    # If this lock replaced a default breakfast lock, update plan_ids status
-                    if meal_type == "Breakfast" and plan_ids[day][meal_type] and plan_ids[day][meal_type].get('default_lock'):
-                        plan_ids[day][meal_type]['default_lock'] = False
+                    if lock_info.get('lock_type') == 'leftover':
+                        # Leftover slots are not treated as locked
+                        plan_ids[day][meal_type] = {
+                            'recipe_id': recipe_id,
+                            'status': 'leftover',
+                            'manual_text': lock_info.get('text'),
+                            'locked_by_main': False,
+                            'locked_by_user': False
+                        }
+                    else:
+                        active_locks[current_coords] = recipe_id
+                        plan_ids[day][meal_type] = {
+                            'recipe_id': recipe_id,
+                            'status': 'locked',
+                            'locked_by_main': True,  # User explicitly locked this
+                            'default_lock': False  # Overrides default if applicable
+                        }
+                        # If this lock replaced a default breakfast lock, update plan_ids status
+                        if meal_type == "Breakfast" and plan_ids[day][meal_type] and plan_ids[day][meal_type].get('default_lock'):
+                            plan_ids[day][meal_type]['default_lock'] = False
                 else:
                     # Locked recipe doesn't exist (maybe deleted)
                     flash(f"Locked recipe ID {recipe_id} for {slot_id} not found in database. Lock ignored.", "warning")
@@ -647,31 +715,6 @@ def generate_meal_plan(num_people: int, locked_meals: LockedMealsDict, days: Opt
             if plan_ids[day][meal_type] is not None:
                 continue
 
-            # --- 1. Try Assigning Leftovers First ---
-            if current_slot_coords in leftovers_to_assign:
-                leftover_info = leftovers_to_assign.pop(current_slot_coords)
-                recipe = db.session.get(Recipe, leftover_info['recipe_id']) # Verify recipe still exists
-                if recipe:
-                    source_slot_coords: Coords = leftover_info['source_slot']
-                    # Determine if the *source* of the leftover was locked by the user
-                    is_source_locked_by_user = source_slot_coords in active_locks and active_locks[source_slot_coords] != default_breakfast_id
-
-                    status = 'locked' if is_source_locked_by_user else 'leftover'
-                    plan_ids[day][meal_type] = {
-                        'recipe_id': leftover_info['recipe_id'],
-                        'status': status,
-                        'locked_by_main': is_source_locked_by_user # Inherit lock status
-                    }
-                    # If source was locked, propagate the lock to this leftover slot
-                    # Note: This check happens *after* the source meal is assigned,
-                    # considering any user locks present for that source slot.
-                    if is_source_locked_by_user:
-                        additional_locks[current_slot_coords] = leftover_info['recipe_id']
-                else:
-                    # Source recipe deleted? Log or handle as needed. Leave slot empty for now.
-                    app.logger.warning(f"Recipe ID {leftover_info['recipe_id']} for leftover assignment at {current_slot_coords} not found.")
-                    plan_ids[day][meal_type] = None
-                continue # Move to next slot
 
             # --- 2. Assign New Random Recipe if No Leftover ---
             available_recipes = recipes_by_type.get(meal_type, [])
@@ -697,82 +740,17 @@ def generate_meal_plan(num_people: int, locked_meals: LockedMealsDict, days: Opt
             chosen_recipe = random.choice(recipes_to_choose)
             plan_ids[day][meal_type] = {'recipe_id': chosen_recipe.id, 'status': 'new', 'locked_by_main': False}
 
-            # --- 3. Calculate and Schedule Potential Leftovers ---
+            # --- 3. Calculate and Assign Leftovers ---
             try:
-                # Check if leftovers should be generated
-                # Requires valid servings, positive num_people, and servings > num_people
-                if (chosen_recipe.servings is not None and
-                        isinstance(num_people, int) and num_people > 0 and
-                        chosen_recipe.servings > num_people):
-
-                    # Calculate number of *additional* slots this meal covers
-                    # Use float division and ceiling to ensure enough slots
-                    additional_slots = int(math.ceil(chosen_recipe.servings / float(num_people))) - 1
-
-                    # Determine if the source meal itself is now considered 'locked' by the user
-                    # (either directly locked or was locked before generation)
-                    is_source_now_locked_by_user = current_slot_coords in active_locks and active_locks[current_slot_coords] != default_breakfast_id
-
-                    # Schedule leftovers for subsequent days for the same meal type
-                    for i in range(1, additional_slots + 1):
-                        next_day_index = day_index + i
-                        # Ensure we don't go beyond the 7-day week
-                        if next_day_index < len(days):
-                            next_slot_coords: Coords = (next_day_index, meal_type)
-
-                            # Check if the target leftover slot is available (not locked, not already assigned)
-                            if (plan_ids[days[next_day_index]][meal_type] is None and
-                                next_slot_coords not in active_locks and
-                                next_slot_coords not in additional_locks and # Check propagated locks too
-                                next_slot_coords not in leftovers_to_assign):
-
-                                # Schedule the leftover assignment
-                                leftovers_to_assign[next_slot_coords] = {
-                                    'recipe_id': chosen_recipe.id,
-                                    'source_slot': current_slot_coords
-                                }
-                                # If the source meal was locked, propagate the lock to the leftover slot
-                                # Note: This check happens *after* the source meal is assigned,
-                                # considering any user locks present for that source slot.
-                                if is_source_now_locked_by_user:
-                                    additional_locks[next_slot_coords] = chosen_recipe.id
-
+                servings = chosen_recipe.servings
+                if servings is not None and isinstance(num_people, int) and num_people > 0:
+                    leftovers = servings - num_people
+                    if leftovers >= num_people:
+                        assign_leftovers(plan_ids, day, meal_type, leftovers, num_people, chosen_recipe.id, days)
             except (TypeError, ValueError, ZeroDivisionError) as e:
-                 # Catch potential errors with servings calculation or num_people
-                 app.logger.error(f"Error calculating leftovers for recipe {chosen_recipe.id} (servings: {chosen_recipe.servings}, num_people: {num_people}): {e}")
-                 # Continue without generating leftovers for this meal
-
-    # --- Final leftover assignment pass ---
-    # This catches any leftovers that couldn't be assigned in the main loop
-    # (e.g., if a later meal assignment blocked a potential leftover slot)
-    # Process a copy of the items to allow modification during iteration
-    for leftover_coords, leftover_info in list(leftovers_to_assign.items()):
-         day_idx, meal_t = leftover_coords
-         day_n = days[day_idx]
-
-         # Double-check if the slot is still empty and not locked
-         if plan_ids[day_n][meal_t] is None and leftover_coords not in active_locks and leftover_coords not in additional_locks:
-             recipe = db.session.get(Recipe, leftover_info['recipe_id']) # Verify recipe exists
-             if recipe:
-                 source_slot_coords: Coords = leftover_info['source_slot']
-                 # Final check if the source slot ended up being locked (user lock OR propagated lock)
-                 is_source_finally_locked = source_slot_coords in active_locks or source_slot_coords in additional_locks
-                 # Check if the source was the default breakfast lock (which shouldn't propagate as a 'main' lock)
-                 source_plan_info = plan_ids[days[source_slot_coords[0]]][source_slot_coords[1]]
-                 is_default_src_lock = source_plan_info.get('default_lock', False) if source_plan_info else False
-
-                 # A leftover is 'locked_by_main' if its source was locked AND it wasn't just the default breakfast
-                 is_locked_by_main = is_source_finally_locked and not is_default_src_lock
-                 status = 'locked' if is_locked_by_main else 'leftover'
-
-                 plan_ids[day_n][meal_t] = {
-                     'recipe_id': leftover_info['recipe_id'],
-                     'status': status,
-                     'locked_by_main': is_locked_by_main
-                 }
-             else:
-                app.logger.warning(f"Recipe ID {leftover_info['recipe_id']} for final leftover assignment at {leftover_coords} not found.")
-                plan_ids[day_n][meal_t] = None # Ensure slot remains empty
+                app.logger.error(
+                    f"Error calculating leftovers for recipe {chosen_recipe.id} (servings: {chosen_recipe.servings}, num_people: {num_people}): {e}")
+                # Continue without generating leftovers for this meal
 
     return plan_ids
 # --- Routes (MUST come after app, db, models, helpers are defined) ---
@@ -1089,37 +1067,32 @@ def dashboard():
             }
 
             if meal_info_ids:
-                 recipe_id = meal_info_ids.get('recipe_id')
-                 status = meal_info_ids.get('status', 'empty') # Default status if missing
+                recipe_id = meal_info_ids.get('recipe_id')
+                status = meal_info_ids.get('status', 'empty')  # Default status if missing
 
-                 # Update display info with data from the plan session state
-                 display_info.update({
-                     'status': status,
-                     'locked_by_main': meal_info_ids.get('locked_by_main', False),
-                     'default_lock': meal_info_ids.get('default_lock', False)
-                 })
+                display_info.update({
+                    'status': status,
+                    'locked_by_main': meal_info_ids.get('locked_by_main', False),
+                    'default_lock': meal_info_ids.get('default_lock', False),
+                    'manual_text': meal_info_ids.get('manual_text')
+                })
 
-                 # Handle manual entry display (-1)
-                 if recipe_id == -1:
-                     display_info.update({
-                         'manual_text': meal_info_ids.get('manual_text', 'Manual Entry'),
-                         'is_manual_entry': True,
-                         'status': 'locked' # Manual entries are always locked
-                     })
-                 # Handle regular recipe display
-                 elif recipe_id is not None and recipe_id > 0:
-                     # Fetch the Recipe object from our pre-fetched dictionary
-                     recipe_object = recipes_in_plan_dict.get(recipe_id)
-                     if recipe_object:
-                         display_info['recipe'] = recipe_object
-                         # Keep the status from the plan ('new', 'leftover', 'locked')
-                         display_info['status'] = status
-                     else:
-                         # Recipe ID exists in plan, but not in DB (deleted?)
-                         display_info['recipe'] = None
-                         display_info['status'] = 'deleted' # Indicate missing recipe
-                         # Optional: Log this inconsistency
-                         app.logger.warning(f"Recipe ID {recipe_id} found in plan but not in database for slot {slot_id}.")
+                if recipe_id == -1:
+                    display_info.update({
+                        'manual_text': meal_info_ids.get('manual_text', 'Manual Entry'),
+                        'is_manual_entry': True,
+                        'status': 'locked'  # Manual entries are always locked
+                    })
+                elif recipe_id is not None and recipe_id > 0:
+                    recipe_object = recipes_in_plan_dict.get(recipe_id)
+                    if recipe_object:
+                        display_info['recipe'] = recipe_object
+                        display_info['status'] = status
+                    else:
+                        display_info['recipe'] = None
+                        display_info['status'] = 'deleted'
+                        app.logger.warning(
+                            f"Recipe ID {recipe_id} found in plan but not in database for slot {slot_id}.")
 
             plan_for_template[day][meal_type] = display_info
 

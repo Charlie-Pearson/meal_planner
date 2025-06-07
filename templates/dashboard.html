@@ -69,7 +69,7 @@
                                             <h4 class="h5">{{ recipe.name }}</h4>
                                             <p class="text-muted"><i>Serves: {{ recipe.servings }}</i></p>
                                     {% if meal_info.status == 'leftover' %}
-                                                
+                                        <p class="text-muted"><em>{{ meal_info.manual_text }}</em></p>
                                     {% endif %}
                                             <input type="hidden" name="recipeid_{{ slot_id }}" value="{{ recipe.id }}">
                                             
