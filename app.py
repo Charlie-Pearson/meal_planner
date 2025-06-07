@@ -482,7 +482,6 @@ def generate_shopping_list_data(plan_ids: PlanIdsDict) -> ShoppingListDict:
     return shopping_list_by_aisle
 
 
-
 # --- Meal Plan Generation ---
 # Type Aliases for Meal Plan structure
 MealInfoDict = Dict[str, Any] # Holds recipe_id, status, locks etc.
@@ -564,29 +563,30 @@ def assign_leftovers(plan_ids: PlanIdsDict, current_day: str, meal_type: str, le
                 next_day = get_next_day(next_day, days)
                 continue
 
+        leftover_label = f"Leftover from {current_day}'s {meal_type.lower()}"
         plan_ids[next_day][meal_type] = {
-            'recipe_id': current_recipe_id,
-            'status': 'leftover',
-            'manual_text': f"Leftover from {current_day}'s {meal_type}",
-            'locked_by_main': False,
-            'locked_by_user': False
+            "recipe_id": current_recipe_id,
+            "status": "leftover",
+            "manual_text": leftover_label,
+            "locked_by_main": False,
+            "locked_by_user": False,
         }
 
         slot_id = f"{next_day}_{meal_type}"
 
         # Persist leftover lock in DB and update session state
         lock_info = {
-            'recipe_id': current_recipe_id,
-            'manual': False,
-            'default': False,
-            'lock_type': 'leftover',
-            'text': f"Leftover from {current_day}'s {meal_type}"
+            "recipe_id": current_recipe_id,
+            "manual": False,
+            "default": False,
+            "lock_type": "leftover",
+            "text": leftover_label,
         }
         update_persistent_lock(slot_id, lock_info)
 
-        session_locks = session.get('locked_meals', {})
+        session_locks = session.get("locked_meals", {})
         session_locks[slot_id] = lock_info
-        session['locked_meals'] = session_locks
+        session["locked_meals"] = session_locks
         session.modified = True
 
         leftovers -= num_people
