@@ -669,9 +669,8 @@ def generate_meal_plan(num_people: int, locked_meals: LockedMealsDict, days: Opt
     # Process each day in order
     for day_idx, day in enumerate(days):
         for meal_type in meal_types:
-            # Skip if locked or already a leftover
-            if (day, meal_type) in locked_slots or \
-               (plan_ids[day][meal_type] and plan_ids[day][meal_type].get('status') == 'leftover'):
+            # Skip if already a leftover (but don't skip locked meals)
+            if plan_ids[day][meal_type] and plan_ids[day][meal_type].get('status') == 'leftover':
                 continue
                 
             meal = plan_ids[day][meal_type]
@@ -699,9 +698,16 @@ def generate_meal_plan(num_people: int, locked_meals: LockedMealsDict, days: Opt
                     if meal_type in leftover_days[next_day]:
                         continue
                         
-                    # Skip if locked
+                    # Skip if locked (unless it's the same meal we're propagating from)
                     if (next_day, meal_type) in locked_slots:
-                        print(f"    ⚠️  Could not set leftover for {next_day} {meal_type} - slot is locked")
+                        # If this is the same recipe as the locked meal, count it as used
+                        next_meal = plan_ids[next_day][meal_type]
+                        if next_meal and next_meal.get('recipe_id') == recipe.id:
+                            print(f"    ℹ️  Found matching locked meal at {next_day} {meal_type}, counting as leftover usage")
+                            leftovers_assigned += 1
+                            # If we've used up all extra meals, break the loop
+                            if leftovers_assigned >= extra_meals:
+                                break
                         continue
                     
                     # Assign the leftover
