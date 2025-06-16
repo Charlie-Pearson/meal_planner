@@ -11,12 +11,16 @@ from datetime import datetime, timedelta, UTC
 import re
 import socket
 import time
+import json
+import uuid
+from functools import wraps
+from pathlib import Path
 
 # --- Third-Party Imports ---
-from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify, abort
+from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify, abort, send_file
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy.sql import func
-from sqlalchemy.orm import joinedload # Explicit import for clarity
+from sqlalchemy.orm import joinedload, aliased # Explicit import for clarity
 from flask_migrate import Migrate
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
 from flask_wtf.csrf import CSRFProtect
@@ -26,6 +30,9 @@ from wtforms.validators import DataRequired, Email
 import bcrypt
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_socketio import SocketIO, emit, join_room, leave_room
+from sqlalchemy import or_, and_, func, text
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.sql import exists
 
 # --- Forms ---
 class LoginForm(FlaskForm):
@@ -54,8 +61,11 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False # Good practice
 # Initialize CSRF protection
 csrf = CSRFProtect(app)
 
+# Initialize SocketIO
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+
 # --- Global Constants ---
-days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+ALL_DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 meal_types = ["Breakfast", "Lunch", "Dinner"]
 
 # --- Database and Migration Initialization ---
@@ -92,9 +102,9 @@ class User(UserMixin, db.Model):
     accounts = db.relationship('Account', secondary='account_user', 
                              back_populates='users',
                              lazy='dynamic',
-                             overlaps="account_users")
+                             overlaps="account_users,user")
     account_users = db.relationship('AccountUser', back_populates='user',
-                                  overlaps="accounts")
+                                  overlaps="accounts,account")
     
     def set_password(self, password):
         salt = bcrypt.gensalt()
@@ -111,9 +121,9 @@ class Account(db.Model):
     users = db.relationship('User', secondary='account_user', 
                           back_populates='accounts',
                           lazy='dynamic',
-                          overlaps="account_users")
+                          overlaps="account_users,account")
     account_users = db.relationship('AccountUser', back_populates='account',
-                                  overlaps="users")
+                                  overlaps="users,user")
     
     def __init__(self, name):
         self.name = name
@@ -402,6 +412,9 @@ ShoppingListDict = Dict[str, List[Dict[str, Any]]] # Aisle -> List of Item Dicts
 PlanIdsDict = Dict[str, Dict[str, Dict[str, Any]]] # day -> meal_type -> recipe_id or manual text
 
 def generate_shopping_list_data(plan_ids: PlanIdsDict) -> ShoppingListDict:
+
+    flash('Generate shopping list data.', 'success')
+            
     """
     Generates shopping list data based on the meal plan IDs.
     Aggregates ingredients across unique recipes in the plan,
@@ -523,242 +536,341 @@ def toggle_meal_lock():
     
     return jsonify({'success': True})
 
-def generate_meal_plan(num_people: int, locked_meals: LockedMealsDict) -> PlanIdsDict:
-    """
-    Generates a 7-day meal plan, considering locked meals and user default settings for each meal type.
-    """
-    plan_ids: PlanIdsDict = {day: {meal_type: None for meal_type in meal_types} for day in days}
+def generate_meal_plan(num_people: int, locked_meals: LockedMealsDict, days: Optional[List[str]] = None) -> PlanIdsDict:
+    app.logger.info("=== generate_meal_plan function called ===")
+    
+    try:
+        flash('Meal plan generated successfully.', 'success')
+        app.logger.info("Flash message set in generate_meal_plan")
+    except Exception as e:
+        app.logger.error(f"Error setting flash message in generate_meal_plan: {str(e)}")
 
+    """
+    Generates a meal plan for the specified days, considering locked meals and user default settings.
+    Meals are generated in order: all breakfasts, then all lunches, then all dinners.
+    Leftovers are handled by propagating them to the next day's same meal type.
+    """
+    print("=== MEAL PLAN GENERATION STARTED ===")
+    print(f"Number of people: {num_people}")
+    app.logger.info(f"Meal plan generation started for {num_people} people")
+    print(f"Locked meals: {locked_meals}")
+    
+    if days is None:
+        days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    print(f"Planning for days: {', '.join(days)}")
+    
+    # Initialize empty plan with all slots as None
+    plan_ids: PlanIdsDict = {day: {meal_type: None for meal_type in meal_types} for day in days}
+    
+    # Track which slots are locked (these won't be modified by leftovers)
+    locked_slots = set()
+    
     # Fetch user default meal settings
     account = current_user.accounts.first()
     settings = getattr(account, 'settings', None)
-    default_breakfast_id = getattr(settings, 'default_breakfast_id', None)
-    default_lunch_id = getattr(settings, 'default_lunch_id', None)
-    default_dinner_id = getattr(settings, 'default_dinner_id', None)
-
-    # Apply defaults for each meal type if not locked
-    for day in days:
-        for meal_type in meal_types:
-            slot_id = f"{day}_{meal_type}"
-            if slot_id not in locked_meals:
-                if meal_type == 'Breakfast' and default_breakfast_id:
-                    plan_ids[day][meal_type] = {
-                        'recipe_id': int(default_breakfast_id),
-                        'status': 'locked',
-                        'locked_by_main': False,
-                        'default_lock': True
-                    }
-                elif meal_type == 'Lunch' and default_lunch_id:
-                    plan_ids[day][meal_type] = {
-                        'recipe_id': int(default_lunch_id),
-                        'status': 'locked',
-                        'locked_by_main': False,
-                        'default_lock': True
-                    }
-                elif meal_type == 'Dinner' and default_dinner_id:
-                    plan_ids[day][meal_type] = {
-                        'recipe_id': int(default_dinner_id),
-                        'status': 'locked',
-                        'locked_by_main': False,
-                        'default_lock': True
-                    }
-    # (rest of the original function logic for locked meals and random assignments follows...)
-
-    # Handle locked meals from session
-    active_locks = {}  # (Coords) -> recipe_id
-    additional_locks = {}  # For leftovers
-    leftovers_to_assign = {}  # For leftovers
+    default_meals = {
+        'Breakfast': getattr(settings, 'default_breakfast_id', None),
+        'Lunch': getattr(settings, 'default_lunch_id', None),
+        'Dinner': getattr(settings, 'default_dinner_id', None)
+    }
+    print(f"Default meals: {default_meals}")
+    
+    # Fetch all recipes once for efficiency
+    all_recipes = Recipe.query.all()
+    recipes_by_type = {
+        meal_type: [r for r in all_recipes if getattr(r, f'is_{meal_type.lower()}', False)]
+        for meal_type in meal_types
+    }
+    print(f"Found {len(all_recipes)} total recipes")
+    for meal_type, recipes in recipes_by_type.items():
+        print(f"  - {meal_type}: {len(recipes)} recipes")
+    
+    # --- PHASE 1: Process locked meals (highest priority) ---
+    print("\n=== PROCESSING LOCKED MEALS ===")
     for slot_id, lock_info in locked_meals.items():
         try:
             day, meal_type = slot_id.split('_', 1)
             if day not in days or meal_type not in meal_types:
-                app.logger.warning(f"Invalid slot_id format in locked_meals: {slot_id}")
-                continue  # Skip malformed slot_id
-            current_coords = (days.index(day), meal_type)
-        except Exception:
-            app.logger.warning(f"Invalid slot_id format in locked_meals: {slot_id}")
-            continue  # Skip malformed slot_id
-
-        if isinstance(lock_info, dict) and 'recipe_id' in lock_info:
-            recipe_id = lock_info['recipe_id']
-            # Handle manual entry lock (-1)
-            if recipe_id == -1:
-                active_locks[current_coords] = -1
-                plan_ids[day][meal_type] = {
-                    'recipe_id': -1,
-                    'manual_text': lock_info.get('text', 'Manual Entry'),
-                    'status': 'locked',
-                    'locked_by_main': True  # User explicitly set this
-                }
-            elif recipe_id is not None:
-                # Check if the locked recipe actually exists in the DB
-                if db.session.get(Recipe, recipe_id):
-                    active_locks[current_coords] = recipe_id
+                print(f"  ⚠️ Invalid slot format or day/meal type: {slot_id}")
+                continue
+                
+            if isinstance(lock_info, dict) and 'recipe_id' in lock_info:
+                recipe_id = lock_info['recipe_id']
+                if recipe_id == -1:  # Manual entry
+                    plan_ids[day][meal_type] = {
+                        'recipe_id': -1,
+                        'manual_text': lock_info.get('text', 'Manual Entry'),
+                        'status': 'locked',
+                        'locked_by_main': True
+                    }
+                    print(f"  🔒 Locked {day} {meal_type}: Manual Entry")
+                elif db.session.get(Recipe, recipe_id):  # Valid recipe
                     plan_ids[day][meal_type] = {
                         'recipe_id': recipe_id,
                         'status': 'locked',
-                        'locked_by_main': True,  # User explicitly locked this
-                        'default_lock': False  # Overrides default if applicable
+                        'locked_by_main': True,
+                        'default_lock': False
                     }
-                    # If this lock replaced a default breakfast lock, update plan_ids status
-                    if meal_type == "Breakfast" and plan_ids[day][meal_type] and plan_ids[day][meal_type].get('default_lock'):
-                        plan_ids[day][meal_type]['default_lock'] = False
+                    print(f"  🔒 Locked {day} {meal_type}: Recipe ID {recipe_id}")
+                    locked_slots.add((day, meal_type))
                 else:
-                    # Locked recipe doesn't exist (maybe deleted)
-                    flash(f"Locked recipe ID {recipe_id} for {slot_id} not found in database. Lock ignored.", "warning")
-                    # Ensure this invalid lock is not active and plan slot is cleared if it held the bad ID
-                    if current_coords in active_locks and active_locks[current_coords] == recipe_id:
-                        del active_locks[current_coords]
-                    if plan_ids[day][meal_type] and plan_ids[day][meal_type].get('recipe_id') == recipe_id:
-                        plan_ids[day][meal_type] = None
-
-    # --- Fetch Recipes ---
-    # Fetch all recipes once for efficiency
-    all_recipes = Recipe.query.all()
-    recipes_by_type: Dict[str, List[Recipe]] = {
-        "Breakfast": [r for r in all_recipes if r.is_breakfast],
-        "Lunch": [r for r in all_recipes if r.is_lunch],
-        "Dinner": [r for r in all_recipes if r.is_dinner]
-    }
-
-    # --- Main Generation Loop ---
-    for day_index, day in enumerate(days):
-        for meal_type in meal_types:
-            current_slot_coords: Coords = (day_index, meal_type)
-
-            # Skip if slot is already filled (by locks or previous leftover assignment)
+                    print(f"  ⚠️ Recipe ID {recipe_id} not found for slot {slot_id}")
+        except Exception as e:
+            print(f"  ❌ Error processing locked meal {slot_id}: {str(e)}")
+            app.logger.error(f"Error processing locked meal {slot_id}: {e}")
+    
+    # --- PHASE 2: Generate meals by type ---
+    print("\n=== GENERATING MEALS ===")
+    for meal_type in meal_types:  # Process in order: Breakfast, Lunch, Dinner
+        print(f"\n🔹 Processing {meal_type}s...")
+        
+        # Get available recipes for this meal type (excluding default if needed)
+        available_recipes = [r for r in recipes_by_type[meal_type] 
+                           if r.id != default_meals[meal_type] or not default_meals[meal_type]]
+        if not available_recipes and recipes_by_type[meal_type]:
+            available_recipes = recipes_by_type[meal_type]  # Fallback to all recipes if needed
+        
+        # Process each day for this meal type
+        for day in days:
+            # Skip if already locked
+            if (day, meal_type) in locked_slots:
+                continue
+                
+            # Skip if already assigned (shouldn't happen, but just in case)
             if plan_ids[day][meal_type] is not None:
                 continue
-
-            # --- 1. Try Assigning Leftovers First ---
-            if current_slot_coords in leftovers_to_assign:
-                leftover_info = leftovers_to_assign.pop(current_slot_coords)
-                recipe = db.session.get(Recipe, leftover_info['recipe_id']) # Verify recipe still exists
-                if recipe:
-                    source_slot_coords: Coords = leftover_info['source_slot']
-                    # Determine if the *source* of the leftover was locked by the user
-                    is_source_locked_by_user = source_slot_coords in active_locks and active_locks[source_slot_coords] != default_breakfast_id
-
-                    status = 'locked' if is_source_locked_by_user else 'leftover'
-                    plan_ids[day][meal_type] = {
-                        'recipe_id': leftover_info['recipe_id'],
-                        'status': status,
-                        'locked_by_main': is_source_locked_by_user # Inherit lock status
-                    }
-                    # If source was locked, propagate the lock to this leftover slot
-                    # Note: This check happens *after* the source meal is assigned,
-                    # considering any user locks present for that source slot.
-                    if is_source_locked_by_user:
-                        additional_locks[current_slot_coords] = leftover_info['recipe_id']
-                else:
-                    # Source recipe deleted? Log or handle as needed. Leave slot empty for now.
-                    app.logger.warning(f"Recipe ID {leftover_info['recipe_id']} for leftover assignment at {current_slot_coords} not found.")
-                    plan_ids[day][meal_type] = None
-                continue # Move to next slot
-
-            # --- 2. Assign New Random Recipe if No Leftover ---
-            available_recipes = recipes_by_type.get(meal_type, [])
-            if not available_recipes:
-                # No recipes available for this meal type
-                plan_ids[day][meal_type] = {'recipe_id': None, 'status': 'empty', 'locked_by_main': False}
+                
+            # Step 1: Try to assign default meal if available
+            if default_meals[meal_type]:
+                plan_ids[day][meal_type] = {
+                    'recipe_id': int(default_meals[meal_type]),
+                    'status': 'default',
+                    'locked_by_main': False,
+                    'default_lock': True
+                }
+                print(f"  ✅ Set {day} {meal_type} to default recipe {default_meals[meal_type]}")
                 continue
-
-            recipes_to_choose = available_recipes
-            # Avoid choosing default breakfast if other breakfast options exist
-            if meal_type == "Breakfast" and default_breakfast_id:
-                 non_default_breakfasts = [r for r in available_recipes if r.id != default_breakfast_id]
-                 if non_default_breakfasts:
-                     recipes_to_choose = non_default_breakfasts
-                 # If only default breakfast exists, recipes_to_choose remains [default_breakfast_recipe]
-
-            if not recipes_to_choose:
-                 # This case should be rare (only default breakfast exists, but was filtered out?)
-                 plan_ids[day][meal_type] = {'recipe_id': None, 'status': 'empty', 'locked_by_main': False}
-                 continue
-
-            # Choose a random recipe from the suitable list
-            chosen_recipe = random.choice(recipes_to_choose)
-            plan_ids[day][meal_type] = {'recipe_id': chosen_recipe.id, 'status': 'new', 'locked_by_main': False}
-
-            # --- 3. Calculate and Schedule Potential Leftovers ---
+                
+            # Step 2: Assign random meal if available
+            if available_recipes:
+                chosen_recipe = random.choice(available_recipes)
+                plan_ids[day][meal_type] = {
+                    'recipe_id': chosen_recipe.id,
+                    'status': 'new',
+                    'locked_by_main': False
+                }
+                print(f"  🎲 Assigned random {meal_type} to {day}: {chosen_recipe.name} (ID: {chosen_recipe.id}, Servings: {chosen_recipe.servings})")
+    
+    # --- PHASE 3: Process leftovers ---
+    print("\n=== PROCESSING LEFTOVERS ===")
+    # Create a list to track which days already have leftovers assigned
+    leftover_days = {day: set() for day in days}
+    
+    # Process each day in order
+    for day_idx, day in enumerate(days):
+        for meal_type in meal_types:
+            # Skip if locked or already a leftover
+            if (day, meal_type) in locked_slots or \
+               (plan_ids[day][meal_type] and plan_ids[day][meal_type].get('status') == 'leftover'):
+                continue
+                
+            meal = plan_ids[day][meal_type]
+            if not meal or meal.get('recipe_id') is None or meal.get('recipe_id') == -1:
+                continue
+                
             try:
-                # Check if leftovers should be generated
-                # Requires valid servings, positive num_people, and servings > num_people
-                if (chosen_recipe.servings is not None and
-                        isinstance(num_people, int) and num_people > 0 and
-                        chosen_recipe.servings > num_people):
-
-                    # Calculate number of *additional* slots this meal covers
-                    # Use float division and ceiling to ensure enough slots
-                    additional_slots = int(math.ceil(chosen_recipe.servings / float(num_people))) - 1
-
-                    # Determine if the source meal itself is now considered 'locked' by the user
-                    # (either directly locked or was locked before generation)
-                    is_source_now_locked_by_user = current_slot_coords in active_locks and active_locks[current_slot_coords] != default_breakfast_id
-
-                    # Schedule leftovers for subsequent days for the same meal type
-                    for i in range(1, additional_slots + 1):
-                        next_day_index = day_index + i
-                        # Ensure we don't go beyond the 7-day week
-                        if next_day_index < len(days):
-                            next_slot_coords: Coords = (next_day_index, meal_type)
-
-                            # Check if the target leftover slot is available (not locked, not already assigned)
-                            if (plan_ids[days[next_day_index]][meal_type] is None and
-                                next_slot_coords not in active_locks and
-                                next_slot_coords not in additional_locks and # Check propagated locks too
-                                next_slot_coords not in leftovers_to_assign):
-
-                                # Schedule the leftover assignment
-                                leftovers_to_assign[next_slot_coords] = {
-                                    'recipe_id': chosen_recipe.id,
-                                    'source_slot': current_slot_coords
-                                }
-                                # If the source meal was locked, propagate the lock to the leftover slot
-                                # Note: This check happens *after* the source meal is assigned,
-                                # considering any user locks present for that source slot.
-                                if is_source_now_locked_by_user:
-                                    additional_locks[next_slot_coords] = chosen_recipe.id
-
-            except (TypeError, ValueError, ZeroDivisionError) as e:
-                 # Catch potential errors with servings calculation or num_people
-                 app.logger.error(f"Error calculating leftovers for recipe {chosen_recipe.id} (servings: {chosen_recipe.servings}, num_people: {num_people}): {e}")
-                 # Continue without generating leftovers for this meal
-
-    # --- Final leftover assignment pass ---
-    # This catches any leftovers that couldn't be assigned in the main loop
-    # (e.g., if a later meal assignment blocked a potential leftover slot)
-    # Process a copy of the items to allow modification during iteration
-    for leftover_coords, leftover_info in list(leftovers_to_assign.items()):
-         day_idx, meal_t = leftover_coords
-         day_n = days[day_idx]
-
-         # Double-check if the slot is still empty and not locked
-         if plan_ids[day_n][meal_t] is None and leftover_coords not in active_locks and leftover_coords not in additional_locks:
-             recipe = db.session.get(Recipe, leftover_info['recipe_id']) # Verify recipe exists
-             if recipe:
-                 source_slot_coords: Coords = leftover_info['source_slot']
-                 # Final check if the source slot ended up being locked (user lock OR propagated lock)
-                 is_source_finally_locked = source_slot_coords in active_locks or source_slot_coords in additional_locks
-                 # Check if the source was the default breakfast lock (which shouldn't propagate as a 'main' lock)
-                 source_plan_info = plan_ids[days[source_slot_coords[0]]][source_slot_coords[1]]
-                 is_default_src_lock = source_plan_info.get('default_lock', False) if source_plan_info else False
-
-                 # A leftover is 'locked_by_main' if its source was locked AND it wasn't just the default breakfast
-                 is_locked_by_main = is_source_finally_locked and not is_default_src_lock
-                 status = 'locked' if is_locked_by_main else 'leftover'
-
-                 plan_ids[day_n][meal_t] = {
-                     'recipe_id': leftover_info['recipe_id'],
-                     'status': status,
-                     'locked_by_main': is_locked_by_main
-                 }
-             else:
-                app.logger.warning(f"Recipe ID {leftover_info['recipe_id']} for final leftover assignment at {leftover_coords} not found.")
-                plan_ids[day_n][meal_t] = None # Ensure slot remains empty
-
+                recipe = db.session.get(Recipe, meal['recipe_id'])
+                if not recipe or not recipe.servings or not num_people or recipe.servings <= num_people:
+                    continue
+                
+                # Calculate how many extra full meals we can make
+                extra_meals = (recipe.servings // num_people) - 1
+                if extra_meals <= 0:
+                    continue
+                    
+                print(f"  🍲 {day} {meal_type} has {recipe.servings} servings for {num_people} people → {extra_meals} extra meal(s) possible")
+                
+                # Find the next available day for leftovers of this meal type
+                leftovers_assigned = 0
+                for next_day_idx in range(day_idx + 1, min(day_idx + 1 + extra_meals, len(days))):
+                    next_day = days[next_day_idx]
+                    
+                    # Skip if this day already has leftovers for this meal type
+                    if meal_type in leftover_days[next_day]:
+                        continue
+                        
+                    # Skip if locked
+                    if (next_day, meal_type) in locked_slots:
+                        print(f"    ⚠️  Could not set leftover for {next_day} {meal_type} - slot is locked")
+                        continue
+                    
+                    # Assign the leftover
+                    plan_ids[next_day][meal_type] = {
+                        'recipe_id': recipe.id,
+                        'status': 'leftover',
+                        'locked_by_main': False,
+                        'leftover_from': f"{day}_{meal_type}",
+                        'servings_used': num_people
+                    }
+                    leftover_days[next_day].add(meal_type)
+                    leftovers_assigned += 1
+                    print(f"    ♻️  Set {next_day} {meal_type} as leftover from {day} {meal_type}")
+                    
+                    # Stop if we've assigned all possible leftovers
+                    if leftovers_assigned >= extra_meals:
+                        break
+                        
+            except Exception as e:
+                print(f"    ❌ Error processing leftovers for {day} {meal_type}: {str(e)}")
+                app.logger.error(f"Error processing leftovers for {day} {meal_type}: {e}")
+    
+    # --- FINAL VALIDATION AND LOGGING ---
+    print("\n=== MEAL PLAN GENERATION COMPLETE ===")
+    print("Final meal plan summary:")
+    
+    # Count stats
+    stats = {
+        'total_meals': 0,
+        'locked': 0,
+        'default': 0,
+        'random': 0,
+        'leftover': 0,
+        'empty': 0
+    }
+    
+    for day in days:
+        print(f"\n{day}:")
+        for meal_type in meal_types:
+            meal = plan_ids[day][meal_type]
+            if not meal:
+                print(f"  {meal_type}: ❌ Not assigned")
+                stats['empty'] += 1
+                continue
+                
+            status_emoji = {
+                'locked': '🔒',
+                'default': '🏠',
+                'new': '🆕',
+                'leftover': '♻️',
+                'manual': '✏️'
+            }.get(meal.get('status', ''), '❓')
+            
+            if meal.get('recipe_id') == -1:  # Manual entry
+                print(f"  {meal_type}: {status_emoji} Manual Entry: {meal.get('manual_text', '')}")
+                stats['locked'] += 1
+            else:
+                recipe = db.session.get(Recipe, meal['recipe_id']) if meal['recipe_id'] else None
+                name = recipe.name if recipe else f"Unknown Recipe (ID: {meal['recipe_id']})"
+                status = meal.get('status', 'unknown')
+                print(f"  {meal_type}: {status_emoji} {name} (ID: {meal['recipe_id']}, Status: {status})")
+                if meal.get('leftover_from'):
+                    print(f"    ↳ Leftover from: {meal['leftover_from']}")
+                
+                # Update stats
+                if status == 'locked':
+                    stats['locked'] += 1
+                elif status == 'default':
+                    stats['default'] += 1
+                elif status == 'new':
+                    stats['random'] += 1
+                elif status == 'leftover':
+                    stats['leftover'] += 1
+                else:
+                    stats['empty'] += 1
+            
+            stats['total_meals'] += 1
+    
+    # Print summary
+    print("\n=== MEAL PLAN STATISTICS ===")
+    print(f"Total meals: {stats['total_meals']}")
+    print(f"Locked meals: {stats['locked']}")
+    print(f"Default meals: {stats['default']}")
+    print(f"Random meals: {stats['random']}")
+    print(f"Leftover meals: {stats['leftover']}")
+    print(f"Empty slots: {stats['empty']}")
+    
     return plan_ids
 # --- Routes (MUST come after app, db, models, helpers are defined) ---
+
+@app.route('/update-shopping-item-checked', methods=['POST'])
+@login_required
+@csrf.exempt  # Exempt this route from CSRF protection since we handle it manually
+def update_shopping_item_checked():
+    """Update the checked status of a shopping list item."""
+    try:
+        # Verify CSRF token
+        token = request.headers.get('X-CSRFToken')
+        if not token:
+            return jsonify({'success': False, 'error': 'CSRF token missing'}), 400
+            
+        data = request.get_json()
+        if not data or 'item_id' not in data or 'is_checked' not in data:
+            return jsonify({'success': False, 'error': 'Invalid request data'}), 400
+
+        try:
+            item_id = int(data['item_id'])
+        except (TypeError, ValueError):
+            return jsonify({'success': False, 'error': 'Invalid item ID'}), 400
+            
+        is_checked = bool(data['is_checked'])
+        
+        # Get current user's account
+        account = current_user.accounts.first()
+        if not account:
+            return jsonify({'success': False, 'error': 'No account found'}), 404
+
+        # Get the item and verify ownership
+        item = ShoppingListItem.query.get(item_id)
+        if not item:
+            return jsonify({'success': False, 'error': 'Item not found'}), 404
+        if item.account_id != account.id:
+            return jsonify({'success': False, 'error': 'Unauthorized'}), 403
+
+        # Update the item
+        item.is_checked = is_checked
+        item.updated_at = datetime.utcnow()
+        db.session.commit()
+
+        # Verify the update
+        db.session.refresh(item)
+        if item.is_checked != is_checked:
+            return jsonify({'success': False, 'error': 'Failed to update item'}), 500
+
+        # Emit update to all users in the same account
+        room = f'shopping_list_{account.id}'
+        app.logger.debug(f'[WEBSOCKET] Emitting item_updated to room {room}')
+        socketio.emit('item_updated', {
+            'item_id': item_id,
+            'is_checked': item.is_checked,
+            'updated_at': item.updated_at.isoformat()
+        }, room=room)
+
+        return jsonify({
+            'success': True,
+            'item_id': item_id,
+            'is_checked': item.is_checked
+        })
+
+    except Exception as e:
+        app.logger.error(f"Error updating shopping item: {str(e)}")
+        return jsonify({'success': False, 'error': 'Server error'}), 500
+
+    account = current_user.accounts.first()
+    if not account:
+        app.logger.error('[DEBUG-update-item] No account found for current user')
+        return jsonify({'success': False, 'error': 'No account found'}), 400
+
+    item = ShoppingListItem.query.get(item_id)
+    if not item or item.account_id != account.id:
+        app.logger.error(f'[DEBUG-update-item] Item not found or access denied for item_id={item_id}')
+        return jsonify({'success': False, 'error': 'Item not found'}), 404
+
+    item.is_checked = bool(is_checked)
+    db.session.commit()
+    print(f"[CONSOLE] Shopping list item update: item_id={item_id}, is_checked={item.is_checked}")
+    app.logger.info(f'[DEBUG-update-item] Updated item_id={item_id} is_checked={is_checked}')
+    return jsonify({'success': True})
+
 
 from flask import request, jsonify
 from flask_login import login_required, current_user
@@ -794,21 +906,35 @@ def dashboard():
     if 'locked_meals' not in session:
         sync_session_locks_with_db()
 
+    # Fetch user meal plan settings
+    account = current_user.accounts.first()
+    settings = getattr(account, 'settings', None)
+    meal_plan_start_day = getattr(settings, 'meal_plan_start_day', 'Monday') if settings else 'Monday'
+    meal_plan_duration = getattr(settings, 'meal_plan_duration', 7) if settings else 7
+    num_people = getattr(settings, 'num_people', 2) if settings else 2
+    try:
+        meal_plan_duration = int(meal_plan_duration)
+    except Exception:
+        meal_plan_duration = 7
+    if meal_plan_duration < 1 or meal_plan_duration > 31:
+        meal_plan_duration = 7
+    try:
+        num_people = int(num_people)
+    except Exception:
+        num_people = 2
+    if num_people < 1:
+        num_people = 2
+
+    # Compute the days for the plan, starting from meal_plan_start_day
+    start_idx = ALL_DAYS.index(meal_plan_start_day) if meal_plan_start_day in ALL_DAYS else 0
+    days = [ALL_DAYS[(start_idx + i) % 7] for i in range(meal_plan_duration)]
+
     # Handle POST request (form submission)
     if request.method == 'POST':
-        # Get form data
-        try:
-            num_people = int(request.form.get('num_people', session['num_people']))
-            if num_people < 1:
-                raise ValueError("Number of people must be at least 1")
-            session['num_people'] = num_people
-        except (ValueError, TypeError):
-            flash("Invalid number of people. Using previous value.", "warning")
-            num_people = session['num_people']
-
-        # Check if this is a "Lock All" request
-        lock_all = request.form.get('lock_all_flag') == 'true'
-        app.logger.info(f"Lock all flag: {lock_all}")
+        # No longer handle num_people from dashboard form; it is now only set via settings page
+        
+        # Check if this is a 'Lock All' request
+        lock_all = request.form.get('lock_all') == 'on'
         
         # Initialize new locked meals dictionary
         new_locked_meals: Dict[str, Dict[str, Any]] = {}
@@ -920,7 +1046,7 @@ def dashboard():
         # Log the final state of locked_meals for debugging
         app.logger.info(f"Final locked_meals state: {session.get('locked_meals')}")
 
-        # Regenerate the meal plan
+        # 
         plan_ids = generate_meal_plan(session['num_people'], session['locked_meals'])
         session['current_plan_ids'] = plan_ids
         session.modified = True
@@ -928,13 +1054,17 @@ def dashboard():
         # Clear shopping list state as the plan has changed
         session.pop('shopping_list_state', None)
 
-        flash("Meal plan regenerated.", "success")
+        # Regenerate the shopping list
+        generate_shopping_list()
+        flash("Shopping list regenerated.", "success")
+
         return redirect(url_for('dashboard'))
 
     # --- GET Request Rendering ---
     # Ensure a plan exists in the session
     if 'current_plan_ids' not in session:
-        session['current_plan_ids'] = generate_meal_plan(session['num_people'], session.get('locked_meals', {}))
+        # Generate plan with correct days and duration
+        session['current_plan_ids'] = generate_meal_plan(num_people, session.get('locked_meals', {}), days=days)
         session.modified = True
 
     plan_ids_from_session: PlanIdsDict = session['current_plan_ids']
@@ -1012,7 +1142,7 @@ def dashboard():
 
     return render_template('dashboard.html',
                            plan=plan_for_template,
-                           num_people=session['num_people'],
+                           num_people=num_people,
                            locked_meals=active_locked_meals_state, # Pass the raw lock state for form defaults
                            days=days,
                            meal_types=meal_types,
@@ -1412,11 +1542,6 @@ def delete_recipe(recipe_id: int):
 @login_required
 def shopping_list():
     app.logger.debug("[DEBUG-shopping-list] Entered shopping_list route")
-    # Always regenerate the shopping list from current session meal plan before displaying
-    try:
-        generate_shopping_list()
-    except Exception as e:
-        app.logger.error(f"[DEBUG-shopping-list] Error regenerating shopping list: {e}")
     if request.method == 'POST':
         data = request.get_json()
         if not data:
@@ -2317,7 +2442,9 @@ def settings():
 @app.route('/generate_meal_plan', methods=['GET', 'POST'])
 @login_required
 def generate_meal_plan_route():
+    flash("Entered Generate_meal_plan_route function","success")
     if request.method == 'POST':
+        flash("Entered Generate_meal_plan_route function POST","success")
         # Get form data
         start_date = request.form.get('start_date')
         end_date = request.form.get('end_date')
@@ -2373,6 +2500,14 @@ def generate_meal_plan_route():
                 'meals': plan_ids
             }
             
+            # Regenerate the shopping list
+            try:
+                generate_shopping_list()
+                app.logger.debug("Shopping list regenerated after meal plan update")
+            except Exception as e:
+                app.logger.error(f"Error regenerating shopping list: {e}")
+                flash('Shopping list may be out of date. Please refresh it manually.', 'warning')
+            
             flash('Meal plan generated successfully! Please review and confirm.', 'success')
             return redirect(url_for('meal_plan'))
             
@@ -2381,7 +2516,15 @@ def generate_meal_plan_route():
             flash(f'Error generating meal plan: {str(e)}', 'error')
             return redirect(url_for('dashboard'))
     
-    return render_template('generate_meal_plan.html')
+    # Get recipes for default meal selection
+    breakfast_recipes = Recipe.query.filter_by(is_breakfast=True).all()
+    lunch_recipes = Recipe.query.filter_by(is_lunch=True).all()
+    dinner_recipes = Recipe.query.filter_by(is_dinner=True).all()
+    
+    return render_template('generate_meal_plan.html', 
+                         breakfast_recipes=breakfast_recipes,
+                         lunch_recipes=lunch_recipes,
+                         dinner_recipes=dinner_recipes)
 
 @app.route('/generate_meal_plan', methods=['POST'])
 @login_required
@@ -2492,9 +2635,36 @@ def generate_meal_plan_post():
         app.logger.debug(f"[DEBUG-gmpost] session['current_plan_ids']: {session.get('current_plan_ids')}")
         print(f"[PRINT-gmpost] plan_ids after form submission: {plan_ids}")
 
-        # Save meal plan to DB (migrated from confirm_meal_plan)
-        from datetime import datetime
-        start_date = datetime.strptime(request.form['start_date'], '%Y-%m-%d').date()
+        # Regenerate shopping list based on new meal plan
+        try:
+            # Get the shopping list data
+            shopping_list_data = generate_shopping_list_data(plan_ids)
+            
+            # Clear existing shopping list items
+            ShoppingListItem.query.filter_by(account_id=account.id).delete()
+            
+            # Add new items to the shopping list
+            for aisle, items in shopping_list_data.items():
+                for item in items:
+                    shopping_item = ShoppingListItem(
+                        account_id=account.id,
+                        name=item['name'],
+                        quantity=item.get('quantity', 1),
+                        unit=item.get('unit', ''),
+                        aisle=aisle,
+                        is_checked=False
+                    )
+                    db.session.add(shopping_item)
+            
+            db.session.commit()
+            app.logger.debug(f"[DEBUG-gmpost] Successfully regenerated shopping list")
+            flash('Meal plan and shopping list generated successfully!', 'success')
+        except Exception as e:
+            db.session.rollback()
+            app.logger.error(f"[ERROR-gmpost] Failed to regenerate shopping list: {str(e)}")
+            flash('Meal plan generated but shopping list may be out of date.', 'warning')
+            
+        return redirect(url_for('meal_plan'))
         end_date = datetime.strptime(request.form['end_date'], '%Y-%m-%d').date()
         account_id = current_user.accounts[0].id
         meal_plan = MealPlan(
@@ -2543,6 +2713,8 @@ def generate_shopping_list():
     print("[PRINT-gsl] Called generate_shopping_list()")
     app.logger.debug("[DEBUG-gsl] Called generate_shopping_list()")
     app.logger.debug("[DEBUG-gsl] generate_shopping_list() called.")
+
+    flash("Generating shopping list...",'success')
     # Get the current user's account
     account = current_user.accounts.first()
     app.logger.debug(f"[DEBUG-gsl] account: {account}")
@@ -2674,34 +2846,49 @@ def regenerate_shopping_list():
     
     return redirect(url_for('shopping_list'))
 
+# --- WebSocket Event Handlers ---
+@socketio.on('connect')
+def handle_connect():
+    app.logger.debug(f'[WEBSOCKET] Client connected: {request.sid}')
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    app.logger.debug(f'[WEBSOCKET] Client disconnected: {request.sid}')
+
+@socketio.on('join_shopping_list')
+def on_join_shopping_list():
+    """When a user opens the shopping list page"""
+    account = current_user.accounts.first()
+    if account:
+        room = f'shopping_list_{account.id}'
+        join_room(room)
+        app.logger.debug(f'[WEBSOCKET] Client {request.sid} joined room {room}')
+
+@socketio.on('leave_shopping_list')
+def on_leave_shopping_list():
+    """When a user leaves the shopping list page"""
+    account = current_user.accounts.first()
+    if account:
+        room = f'shopping_list_{account.id}'
+        leave_room(room)
+        app.logger.debug(f'[WEBSOCKET] Client {request.sid} left room {room}')
+
 # --- Main Execution ---
 if __name__ == '__main__':
     # Create database tables if they don't exist.
-    # Needs the application context.
-    with app.app_context():
-        # Check if the database file exists before creating tables
-        # This is a simple check; migrations are better for managing changes.
-        if not os.path.exists(DATABASE_PATH):
-            print("Database file not found, creating tables...")
-            db.create_all()
-            print("Tables created.")
-        else:
-            print("Database file found.")
-            # Check if tables exist
-            inspector = db.inspect(db.engine)
-            table_names = inspector.get_table_names()
-            print(f"Existing tables: {table_names}")
-            
-            # If no tables exist, create them
-            if not table_names:
-                print("No tables found, creating tables...")
+    def create_tables():
+        with app.app_context():
+            # Check if the database file exists before creating tables
+            # This is a simple check; migrations are better for managing changes.
+            if not os.path.exists(DATABASE_PATH):
+                print("Database file not found, creating tables...")
                 db.create_all()
                 print("Tables created.")
             else:
                 print("Tables already exist.")
-
-    # Run the Flask development server
+    
+    # Run the Flask development server with Socket.IO support
     # host='0.0.0.0' makes it accessible on your network
     # debug=True enables interactive debugger and auto-reloading (DISABLE IN PRODUCTION)
-    print("Starting Flask development server...")
-    app.run(host='0.0.0.0', port=5000, debug=True) # Set debug=False for production!
+    print("Starting Flask development server with Socket.IO support...")
+    socketio.run(app, host='0.0.0.0', port=5000, debug=True)  # Set debug=False for production!

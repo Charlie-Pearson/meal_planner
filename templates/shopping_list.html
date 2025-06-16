@@ -73,22 +73,24 @@
                         <li class="list-group-item d-flex justify-content-between align-items-center">
                             <div class="form-check">
                                 <input class="form-check-input item-checkbox" type="checkbox" 
+                                       id="item-{{ item.id }}"
                                        data-item-id="{{ item.id }}" 
-                                       {% if item.is_checked %}checked{% endif %}>
-                                <label class="form-check-label {% if item.is_checked %}text-muted text-decoration-line-through{% endif %}">
+                                       {% if item.is_checked %}checked="checked"{% endif %}>
+                                <label class="form-check-label {% if item.is_checked %}text-muted text-decoration-line-through{% endif %}"
+                                       for="item-{{ item.id }}">
                                     {{ item.name }}
                                     {% if item.quantity %}
                                         ({{ item.quantity }}{% if item.unit %} {{ item.unit }}{% endif %})
-    {% endif %}
+                                    {% endif %}
                                 </label>
                             </div>
                             <button class="btn btn-sm btn-danger delete-item" data-item-id="{{ item.id }}">
                                 <i class="fas fa-trash"></i>
                             </button>
-        </li>
-        {% endfor %}
-    </ul>
-</div>
+                        </li>
+                        {% endfor %}
+                    </ul>
+                </div>
             </div>
             {% endfor %}
         {% else %}
@@ -192,6 +194,18 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // Initial attachment of event listeners
     attachEventListeners();
+
+    // Log the status of each shopping list item on page load
+    document.querySelectorAll('.list-group-item').forEach(function(listItem) {
+        const checkbox = listItem.querySelector('.item-checkbox');
+        const label = listItem.querySelector('label');
+        const itemId = checkbox ? checkbox.getAttribute('data-item-id') : null;
+        const name = label ? label.textContent.trim() : '';
+        const isChecked = checkbox && checkbox.checked;
+        if (itemId) {
+            console.log(`[SHOPPING-LIST] Item ID ${itemId} (${name}) checked: ${isChecked}`);
+        }
+    });
 
     // Function to check for updates every 0.5 seconds
     function checkForUpdates() {
