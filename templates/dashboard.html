@@ -49,78 +49,49 @@
             <tr>
                         <td class="fw-bold">{{ day }}</td>
                 {% for meal_type in meal_types %}
-                    {% set slot_id = day + '_' + meal_type %}
-                    {% set meal_info = plan[day][meal_type] %}
-                    {% set current_lock_info = locked_meals.get(slot_id) %}
-                    {% set is_display_locked = (meal_info.status == 'locked') or (current_lock_info and current_lock_info.manual) or meal_info.default_lock %}
-                            {% set lock_type = 'default' if meal_info.default_lock else 'manual' if current_lock_info and current_lock_info.manual else 'user' if is_display_locked else None %}
-
-                            <td class="meal-slot meal-status-{{ meal_info.status if meal_info else 'empty' }} {% if lock_type %}meal-locked-{{ lock_type }}{% endif %}">
+                    {% set slot_id = day ~ '_' ~ meal_type %}
+                    {% set meal_info = session.meal_plan.get(day, {}).get(meal_type, {}) %}
+                    {% set is_locked = meal_info.get('is_locked', False) %}
+                    {% set recipe = meal_info.get('recipe') %}
+                    
+                    <td class="meal-slot {% if is_locked %}meal-locked-user{% endif %}">
                         <div class="meal-slot-content">
-                            {% if meal_info and (meal_info.recipe or meal_info.is_manual_entry) %}
-                                {% if meal_info.is_manual_entry %}
-                                            <h4 class="h5">{{ meal_info.manual_text }}</h4>
-                                            
-                                    <input type="hidden" name="recipeid_{{ slot_id }}" value="-1">
-                                        {% else %}
-                                    {% set recipe = meal_info.recipe %}
-                                            <h4 class="h5">{{ recipe.name }}</h4>
-                                            <p class="text-muted"><i>Serves: {{ recipe.servings }}</i></p>
-                                    {% if meal_info.status == 'leftover' %}
-                                                
+                            {% if recipe %}
+                                <h4 class="h5">{{ recipe.name }}</h4>
+                                <div class="recipe-details">
+                                    <span class="badge bg-secondary">{{ recipe.meal_type }}</span>
+                                    {% if meal_info.get('is_leftover') %}
+                                        <span class="badge bg-warning text-dark">Leftovers from {{ meal_info.leftover_from_day }}'s {{ meal_info.leftover_from_meal_type }}</span>
                                     {% endif %}
-                                            <input type="hidden" name="recipeid_{{ slot_id }}" value="{{ recipe.id }}">
-                                            
-                                            <!-- View Recipe Button -->
-                                            <a href="{{ url_for('view_recipe', recipe_id=recipe.id) }}" class="btn btn-sm btn-outline-primary mt-2">
-                                                <i class="fas fa-eye"></i> View Recipe
-                                            </a>
-                                        {% endif %}
-
-                                        <div class="lock-control mt-2">
-                                            <div class="form-check">
-                                    <input type="checkbox" name="lock_{{ slot_id }}" id="lock_{{ slot_id }}" class="lock-checkbox{% if lock_type %} lock-type-{{ lock_type }}{% endif %}" data-slot="{{ slot_id }}" {% if locked_meals[slot_id] %}checked{% endif %}{% if meal_info.is_manual_entry %} disabled title="Manual entries are always locked. Clear selection below to unlock."{% endif %}>
-                                                <label for="lock_{{ slot_id }}" class="form-check-label {% if lock_type %}lock-type-{{ lock_type }}{% endif %}">
-                                                    Lock
-                                                    {% if lock_type == 'default' %}
-                                                                                                        {% elif lock_type == 'manual' %}
-                                                                                                        {% elif lock_type == 'user' %}
-                                                        <span class="">User</span>
-                                                    {% endif %}
-                                                </label>
-                                            </div>
+                                    <span class="badge bg-success">{{ recipe.servings }} servings</span>
                                 </div>
-
-                                    {% else %}
-                                 {% if meal_info and meal_info.status == 'deleted' %}
-                                            <p class="text-muted"><i>-- Recipe Deleted --</i></p>
-                                 {% else %}
-                                             <p class="text-muted"><i>-- Empty --</i></p>
-                                     {% if meal_info and meal_info.status == 'empty'%}
-                                                <p class="text-muted"><small>(No suitable recipe found/generated)</small></p>
-                                     {% endif %}
-                                 {% endif %}
-                                        <input type="hidden" name="recipeid_{{ slot_id }}" value="">
+                                <div class="mt-2">
+                                    <a href="{{ url_for('view_recipe', recipe_id=recipe.id) }}" class="btn btn-sm btn-outline-primary">View Recipe</a>
+                                </div>
+                            {% else %}
+                                <div class="empty-meal-slot">
+                                    <span class="text-muted">No meal planned</span>
+                                </div>
                             {% endif %}
-                                </div>
 
-                                <div class="manual-entry-controls mt-3">
-                                    <select name="manual_select_{{ slot_id }}" id="manual_select_{{ slot_id }}" onchange="handleManualSelect(this, '{{ slot_id }}')" class="form-select manual-select">
-                                <option value="0" {% if not current_lock_info or not current_lock_info.manual %}selected{% endif %}>-- Generate Randomly --</option>
-                                <option value="-1" {% if current_lock_info and current_lock_info.recipe_id == -1 %}selected{% endif %}>** Enter Text Below **</option>
-                                <option value="" disabled>------------------</option>
-                                {% for r in all_recipes %}
-                                <option value="{{ r.id }}" {% if current_lock_info and current_lock_info.recipe_id == r.id %}selected{% endif %}>{{ r.name }}</option>
-                                {% endfor %}
-                            </select>
-                            <input type="text" name="manual_text_{{ slot_id }}" id="manual_text_{{ slot_id }}" placeholder="Or type custom meal here..."
-                                           class="form-control mt-2 manual-text-input hidden"
-                                           value="{{ current_lock_info.text if current_lock_info and current_lock_info.recipe_id == -1 else '' }}">
-                                </div>
+                            <div class="form-check form-switch mt-2">
+                                <input class="form-check-input lock-checkbox" 
+                                       type="checkbox" 
+                                       id="lock_{{ slot_id }}" 
+                                       data-slot-id="{{ slot_id }}"
+                                       {% if is_locked %}checked{% endif %}>
+                                <label class="form-check-label" for="lock_{{ slot_id }}">
+                                    <i class="fas fa-lock"></i> Lock
+                                </label>
+                            </div>
+
+                            <input type="hidden" name="is_locked_{{ slot_id }}" id="is_locked_{{ slot_id }}" 
+                                   value="{{ 'true' if is_locked else 'false' }}">
+                        </div>
                     </td>
-                        {% endfor %}
+                {% endfor %}
             </tr>
-                    {% endfor %}
+            {% endfor %}
         </tbody>
     </table>
         </div>
@@ -159,6 +130,17 @@
 
     .meal-status-leftover {
         background-color: #e3f2fd;
+        position: relative;
+    }
+    
+    .leftover-badge {
+        margin: 5px 0;
+    }
+    
+    .leftover-badge .badge {
+        font-weight: normal;
+        font-size: 0.8em;
+        padding: 0.35em 0.65em;
     }
 
     .meal-status-locked {
@@ -199,197 +181,84 @@
 
 {% block scripts_extra %}
 <script>
-    // Function to handle manual selection changes
-    function handleManualSelect(selectElement, slotId) {
-        const lockCheckbox = document.getElementById(`lock_${slotId}`);
-        const manualTextInput = document.getElementById(`manual_text_${slotId}`);
-        const selectedValue = selectElement.value;
-        
-        
-        
-        // Always enable the lock checkbox
-        lockCheckbox.disabled = false;
-        
-        if (selectedValue === "-1") {
-            // Manual text entry selected
-            manualTextInput.style.display = "block";
-            manualTextInput.required = true;
-            lockCheckbox.checked = true; // Auto-check when manual entry is selected
-            console.log(`Manual entry selected for ${slotId}, checkbox checked`);
-        } else if (selectedValue === "0") {
-            // Random generation selected
-            manualTextInput.style.display = "none";
-            manualTextInput.required = false;
-            manualTextInput.value = ""; // Clear any manual text
-            lockCheckbox.checked = false; // Auto-uncheck when random is selected
-            
-        } else {
-            // Specific recipe selected
-            manualTextInput.style.display = "none";
-            manualTextInput.required = false;
-            manualTextInput.value = ""; // Clear any manual text
-            lockCheckbox.checked = true; // Auto-check when specific recipe is selected
-            
-        }
-    }
+    // Function to handle lock checkbox changes
+    function handleLockChange(e) {
+        const checkbox = e.target;
+        if (!checkbox.classList.contains('lock-checkbox')) return;
 
-    // Function to handle manual text input changes
-    function handleManualTextChange(input, slotId) {
-        const lockCheckbox = document.getElementById(`lock_${slotId}`);
-        const manualSelect = document.getElementById(`manual_select_${slotId}`);
+        const slotId = checkbox.dataset.slotId;
+        const isLocked = checkbox.checked;
         
-        
-        
-        if (input.value.trim() === "") {
-            // If manual text is cleared, switch to random generation
-            manualSelect.value = "0";
-            lockCheckbox.checked = false;
-            input.style.display = "none";
-            input.required = false;
-            
-        } else {
-            // Ensure manual entry is selected and locked when text is entered
-            manualSelect.value = "-1";
-            lockCheckbox.checked = true;
-            input.style.display = "block";
-            input.required = true;
-            
+        // Update the hidden input
+        const hiddenInput = document.getElementById(`is_locked_${slotId}`);
+        if (hiddenInput) {
+            hiddenInput.value = isLocked ? 'true' : 'false';
         }
-    }
 
-    // Initialize all manual select dropdowns on page load
-    document.addEventListener('DOMContentLoaded', function() {
-    
-        
-        
-        // Set up lock checkboxes with direct event handling
-        const lockCheckboxes = document.querySelectorAll('.lock-checkbox');
-        
-        
-        lockCheckboxes.forEach(checkbox => {
-            const slotId = checkbox.id.replace('lock_', '');
-            
-            
-            // Add change event listener
-            checkbox.addEventListener('change', function() {
-                const slotId = this.id.replace('lock_', '');
-                const manualSelect = document.getElementById(`manual_select_${slotId}`);
-                const manualTextInput = document.getElementById(`manual_text_${slotId}`);
-                
-                console.log(`Checkbox changed for ${slotId}, new state: ${this.checked}`);
-                
-                if (!this.checked) {
-                    // When unchecked, ALWAYS set dropdown to "Generate Randomly"
-                    manualSelect.value = "0";
-                    manualTextInput.style.display = "none";
-                    manualTextInput.required = false;
-                    manualTextInput.value = "";
-                    
-                    
+        // Update the UI immediately for better responsiveness
+        const mealSlot = checkbox.closest('.meal-slot');
+        if (isLocked) {
+            mealSlot.classList.add('meal-locked-user');
+        } else {
+            mealSlot.classList.remove('meal-locked-user');
+        }
+
+        // Send AJAX request to update the lock status
+        fetch('/toggle_meal_lock', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': document.querySelector('input[name="csrf_token"]').value
+            },
+            body: JSON.stringify({
+                slot_id: slotId,
+                locked: isLocked
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (!data.success) {
+                // Revert the UI if the request failed
+                checkbox.checked = !isLocked;
+                if (hiddenInput) {
+                    hiddenInput.value = isLocked ? 'false' : 'true';
                 }
-            });
-            
-            // Also run once on page load to ensure initial state is correct
-            if (!checkbox.checked) {
-                const slotId = checkbox.id.replace('lock_', '');
-                const manualSelect = document.getElementById(`manual_select_${slotId}`);
-                const manualTextInput = document.getElementById(`manual_text_${slotId}`);
-                
-                
-                
-                manualSelect.value = "0";
-                manualTextInput.style.display = "none";
-                manualTextInput.required = false;
-                manualTextInput.value = "";
+                if (isLocked) {
+                    mealSlot.classList.remove('meal-locked-user');
+                } else {
+                    mealSlot.classList.add('meal-locked-user');
+                }
+                console.error('Failed to update lock status:', data.error);
+            }
+        })
+        .catch(error => {
+            console.error('Error updating lock status:', error);
+            // Revert the UI on error
+            checkbox.checked = !isLocked;
+            if (hiddenInput) {
+                hiddenInput.value = isLocked ? 'false' : 'true';
+            }
+            if (isLocked) {
+                mealSlot.classList.remove('meal-locked-user');
+            } else {
+                mealSlot.classList.add('meal-locked-user');
             }
         });
-        
-        // Set up manual selects
-        const manualSelects = document.querySelectorAll('[id^="manual_select_"]');
-        
-        
-        manualSelects.forEach(select => {
-            const slotId = select.id.replace('manual_select_', '');
-            
-            
-            handleManualSelect(select, slotId);
-            
-            // Add event listener to manual text input
-            const manualTextInput = document.getElementById(`manual_text_${slotId}`);
-            manualTextInput.addEventListener('input', function() {
-                handleManualTextChange(this, slotId);
-            });
-        });
-        
-        // Set up form submission handler
-        const mealPlanForm = document.getElementById('meal-plan-form');
-        if (mealPlanForm) {
-            
-            
-            mealPlanForm.addEventListener('submit', function(event) {
-                
-                
-                // Remove required attribute from all hidden manual text inputs
-                const hiddenInputs = document.querySelectorAll('.manual-text-input[style*="display: none"]');
-                
-                
-                hiddenInputs.forEach(input => {
-                    
-                    input.removeAttribute('required');
-                });
-                
-                // Validate the form
-                if (!this.checkValidity()) {
-                    
-                    event.preventDefault();
-                    event.stopPropagation();
-                } else {
-                    
-                }
-                
-                this.classList.add('was-validated');
-            });
-        } else {
-            
-        }
-        // --- Lock Checkbox AJAX Listener ---
-        document.querySelectorAll('.lock-checkbox').forEach(function(checkbox, idx) {
-            const slotId = checkbox.getAttribute('data-slot');
-            
-            checkbox.addEventListener('change', function() {
-                const isLocked = this.checked;
-                const csrf = document.querySelector('input[name=csrf_token]').value;
-                
-                const payload = { slot_id: slotId, locked: isLocked };
-                
-                fetch('/toggle_meal_lock', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'X-CSRFToken': csrf
-                    },
-                    body: JSON.stringify(payload)
-                })
-                .then(response => {
-                    
-                    return response.json();
-                })
-                .then(data => {
-                    
-                    if (data.success) {
-                        
-                        location.reload();
-                    } else {
-                        
-                        alert('Failed to update lock state');
-                    }
-                })
-                .catch(err => {
-                    
-                });
-            });
-        });
-    });
+    }
 
+    // Add event listener for lock checkboxes
+    document.addEventListener('change', handleLockChange);
+
+    // Set up form submission handler
+    const mealPlanForm = document.getElementById('meal-plan-form');
+    if (mealPlanForm) {
+        mealPlanForm.addEventListener('submit', function(event) {
+            // Remove required attribute from all hidden manual text inputs
+            const hiddenInputs = document.querySelectorAll('.manual-text-input[style*="display: none"]');
+            hiddenInputs.forEach(input => {
+                input.removeAttribute('required');
+            });
+        });
+    }
 </script>
 {% endblock %}

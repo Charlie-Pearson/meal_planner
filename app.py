@@ -17,6 +17,7 @@ from functools import wraps
 from pathlib import Path
 
 # --- Third-Party Imports ---
+import click
 from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify, abort, send_file
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy.sql import func
@@ -97,7 +98,7 @@ class User(UserMixin, db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     last_login = db.Column(db.DateTime)
     is_active = db.Column(db.Boolean, default=True)
-    
+    is_admin = db.Column(db.Boolean, default=False, nullable=False)
     # Update relationship to use back_populates and overlaps
     accounts = db.relationship('Account', secondary='account_user', 
                              back_populates='users',
@@ -175,7 +176,7 @@ class Recipe(db.Model):
     is_breakfast = db.Column(db.Boolean, default=False, nullable=False)
     is_lunch = db.Column(db.Boolean, default=False, nullable=False)
     is_dinner = db.Column(db.Boolean, default=False, nullable=False)
-    ingredients = db.relationship('Ingredient', backref='recipe', lazy=True, cascade="all, delete-orphan")
+    recipe_ingredients = db.relationship('RecipeIngredient', backref='recipe', lazy=True, cascade="all, delete-orphan")
     
     # New fields for account and privacy
     account_id = db.Column(db.Integer, db.ForeignKey('account.id'), nullable=True)
@@ -187,17 +188,20 @@ class Recipe(db.Model):
     def __repr__(self):
         return f'<Recipe {self.name}>'
 
-class Ingredient(db.Model):
+class RecipeIngredient(db.Model):
+    __tablename__ = 'recipe_ingredients'
     id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(100), nullable=False)
-    quantity = db.Column(db.String(50))
-    unit = db.Column(db.String(50))
-    aisle = db.Column(db.String(50))
     recipe_id = db.Column(db.Integer, db.ForeignKey('recipe.id'), nullable=False)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
+    ingredient_id = db.Column(db.Integer, db.ForeignKey('ingredients.id'), nullable=False)
+    quantity = db.Column(db.String(50), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    
+    # Relationships
+    ingredient = db.relationship('Ingredient')
+    
     def __repr__(self):
-        return f'<Ingredient {self.name} for Recipe {self.recipe_id}>'
+        return f'<RecipeIngredient {self.quantity} {self.ingredient.name if self.ingredient else "Unknown"}>'
 
 class PantryItem(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -210,23 +214,55 @@ class PantryItem(db.Model):
     def __repr__(self):
         return f'<PantryItem {self.name}>'
 
-class LockedMeal(db.Model):
-    """Model for storing locked meals in the database."""
+class Aisle(db.Model):
+    __tablename__ = 'aisles'
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False, unique=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    
+    def __repr__(self):
+        return f'<Aisle {self.name}>'
+
+class Ingredient(db.Model):
+    __tablename__ = 'ingredients'
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False, unique=True)
+    unit = db.Column(db.String(50), nullable=False)
+    aisle_id = db.Column(db.Integer, db.ForeignKey('aisles.id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    recipe_id = db.Column(db.Integer, db.ForeignKey('recipe.id'))
+
+    # Relationships
+    aisle = db.relationship('Aisle', backref='ingredients')
+    
+    def __repr__(self):
+        return f'<Ingredient {self.name} ({self.unit})>'
+
+class MealPlan(db.Model):
+    """Model for storing the complete meal plan in the database."""
     id = db.Column(db.Integer, primary_key=True)
     day = db.Column(db.String(10), nullable=False)
     meal_type = db.Column(db.String(20), nullable=False)
     recipe_id = db.Column(db.Integer, db.ForeignKey('recipe.id'), nullable=True)
-    manual_text = db.Column(db.String(200), nullable=True)
-    is_manual = db.Column(db.Boolean, default=False)
-    is_default = db.Column(db.Boolean, default=False)
-    lock_type = db.Column(db.String(20), default='user')  # Add lock_type field with default 'user'
+    account_id = db.Column(db.Integer, db.ForeignKey('account.id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    is_locked = db.Column(db.Boolean, default=False, nullable=False)
+    is_leftover = db.Column(db.Boolean, default=False, nullable=False)
+    leftover_from_day = db.Column(db.String(10), nullable=True)
+    leftover_from_meal_type = db.Column(db.String(20), nullable=True)
+    
+    # Relationships
+    recipe = db.relationship('Recipe')
+    account = db.relationship('Account')
     
     __table_args__ = (
-        db.UniqueConstraint('day', 'meal_type', name='unique_day_meal'),
+        db.UniqueConstraint('day', 'meal_type', 'account_id', name='unique_day_meal_account'),
     )
 
     def __repr__(self):
-        return f'<LockedMeal {self.day} {self.meal_type}>'
+        return f'<MealPlan {self.day} {self.meal_type} for account {self.account_id}>'
 
 class AccountSettings(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -334,66 +370,108 @@ def format_decimal(value: Optional[Decimal]) -> str:
 
 def get_distinct_aisles() -> List[str]:
     """Gets unique, non-empty, sorted aisle names from Ingredients and Pantry."""
-    # Query distinct aisles from Ingredients
-    q1 = db.session.query(Ingredient.aisle).filter(Ingredient.aisle.isnot(None), Ingredient.aisle != '').distinct()
-    # Query distinct aisles from Pantry
-    q2 = db.session.query(PantryItem.aisle).filter(PantryItem.aisle.isnot(None), PantryItem.aisle != '').distinct()
-    # Combine results using union, convert to set for uniqueness, filter out None again just in case, sort.
-    all_aisles = {row[0] for row in q1.union(q2).all() if row[0]}
-    return sorted(list(all_aisles))
-
-def get_persistent_locks() -> Dict[str, Dict[str, Any]]:
-    """Get all persistent locks from the database."""
-    locks = {}
-    for lock in LockedMeal.query.all():
-        slot_id = f"{lock.day}_{lock.meal_type}"
-        lock_info = {
-            'recipe_id': lock.recipe_id,
-            'manual': lock.is_manual,
-            'default': lock.is_default,
-            'lock_type': lock.lock_type
-        }
-        if lock.manual_text:
-            lock_info['text'] = lock.manual_text
-        
-        app.logger.debug(f"Retrieved lock from DB: {slot_id} - recipe_id: {lock_info['recipe_id']}, manual: {lock_info['manual']}, default: {lock_info['default']}, lock_type: {lock_info['lock_type']}")
-        locks[slot_id] = lock_info
+    # Query distinct aisles from Aisles table
+    aisle_names = db.session.query(Aisle.name).filter(
+        Aisle.name.isnot(None),
+        Aisle.name != ''
+    ).distinct().all()
     
-    app.logger.info(f"Retrieved {len(locks)} persistent locks from database")
-    return locks
+    # Extract names from the result
+    return sorted([name[0] for name in aisle_names if name[0]])
 
-def update_persistent_lock(slot_id: str, lock_info: Optional[Dict[str, Any]]) -> None:
+def get_meal_plan(account_id: int) -> Dict[str, Dict[str, Any]]:
+    """Get the current meal plan for an account from the database."""
+    plan = {}
+    for entry in MealPlan.query.filter_by(account_id=account_id).all():
+        day = entry.day
+        meal_type = entry.meal_type
+        
+        if day not in plan:
+            plan[day] = {}
+            
+        # Only include basic recipe info that's JSON serializable
+        recipe_info = None
+        if entry.recipe:
+            recipe_info = {
+                'id': entry.recipe.id,
+                'name': entry.recipe.name,
+                'servings': entry.recipe.servings,
+                'is_breakfast': entry.recipe.is_breakfast,
+                'is_lunch': entry.recipe.is_lunch,
+                'is_dinner': entry.recipe.is_dinner,
+                'method': entry.recipe.method,
+                'source_link': entry.recipe.source_link
+            }
+            
+        plan[day][meal_type] = {
+            'recipe_id': entry.recipe_id,
+            'is_locked': entry.is_locked,
+            'recipe': recipe_info,
+            'status': 'leftover' if entry.is_leftover else ('locked' if entry.is_locked else 'new'),
+            'is_leftover': entry.is_leftover,
+            'leftover_from_day': entry.leftover_from_day,
+            'leftover_from_meal_type': entry.leftover_from_meal_type,
+            'leftover_from': f"{entry.leftover_from_day}_{entry.leftover_from_meal_type}" 
+                               if entry.is_leftover and entry.leftover_from_day and entry.leftover_from_meal_type 
+                               else None
+        }
+    app.logger.info(f"Retrieved meal plan for account {account_id} with {len(plan)} days")
+    return plan
+
+def update_meal_plan(account_id: int, day: str, meal_type: str, recipe_id: Optional[int], is_locked: bool = False,
+                    is_leftover: bool = False, leftover_from_day: Optional[str] = None, 
+                    leftover_from_meal_type: Optional[str] = None) -> None:
     """
-    Update the persistent lock for a meal slot in the database.
+    Update or create a meal plan entry in the database.
 
     Args:
-        slot_id: The slot identifier (e.g., 'Monday_Breakfast')
-        lock_info: Dictionary containing lock information or None to remove the lock
+        account_id: ID of the account
+        day: Day of the week (e.g., 'Monday')
+        meal_type: Type of meal (e.g., 'Breakfast')
+        recipe_id: ID of the recipe or None if not set
+        is_locked: Whether the meal is locked
+        is_leftover: Whether this is a leftover meal
+        leftover_from_day: Day the original meal was from (for leftovers)
+        leftover_from_meal_type: Type of the original meal (for leftovers)
     """
     try:
-        day, meal_type = slot_id.split('_')
+        # Try to find existing entry
+        entry = MealPlan.query.filter_by(
+            account_id=account_id,
+            day=day,
+            meal_type=meal_type
+        ).first()
         
-        # Remove any existing locks for this slot
-        LockedMeal.query.filter_by(day=day, meal_type=meal_type).delete()
-        
-        if lock_info:
-            # Create new lock with lock type information
-            new_lock = LockedMeal(
+        if entry:
+            # Update existing entry
+            entry.recipe_id = recipe_id
+            entry.is_locked = is_locked
+            entry.is_leftover = is_leftover
+            if is_leftover:
+                entry.leftover_from_day = leftover_from_day
+                entry.leftover_from_meal_type = leftover_from_meal_type
+            else:
+                entry.leftover_from_day = None
+                entry.leftover_from_meal_type = None
+        else:
+            # Create new entry
+            entry = MealPlan(
+                account_id=account_id,
                 day=day,
                 meal_type=meal_type,
-                recipe_id=lock_info.get('recipe_id'),
-                manual_text=lock_info.get('manual_text'),
-                is_manual=lock_info.get('manual', False),
-                is_default=lock_info.get('default', False),
-                lock_type=lock_info.get('lock_type', 'user')  # Add lock type with default 'user'
+                recipe_id=recipe_id,
+                is_locked=is_locked,
+                is_leftover=is_leftover,
+                leftover_from_day=leftover_from_day if is_leftover else None,
+                leftover_from_meal_type=leftover_from_meal_type if is_leftover else None
             )
-            db.session.add(new_lock)
+            db.session.add(entry)
             
         db.session.commit()
-        app.logger.info(f"Updated persistent lock for {slot_id}: {lock_info}")
+        app.logger.info(f"Updated meal plan for {day} {meal_type}: recipe_id={recipe_id}, locked={is_locked}")
     except Exception as e:
         db.session.rollback()
-        app.logger.error(f"Error updating persistent lock for {slot_id}: {str(e)}", exc_info=True)
+        app.logger.error(f"Error updating meal plan: {str(e)}", exc_info=True)
         raise
 
 def sync_session_locks_with_db() -> None:
@@ -404,6 +482,18 @@ def sync_session_locks_with_db() -> None:
     session['locked_meals'] = db_locks
     session.modified = True
 
+def sync_meal_plan_with_session(account_id: int) -> None:
+    """
+    Sync the meal plan from database to session.
+    Ensures the session contains a serializable version of the meal plan.
+    """
+    # Always sync from database to ensure we have the latest data
+    meal_plan = get_meal_plan(account_id)
+    
+    # Update the session
+    session['meal_plan'] = meal_plan
+    session.modified = True
+    app.logger.info("Synced meal plan from database to session")
 
 # --- Shopping List Generation ---
 # Type Alias for clarity
@@ -412,9 +502,6 @@ ShoppingListDict = Dict[str, List[Dict[str, Any]]] # Aisle -> List of Item Dicts
 PlanIdsDict = Dict[str, Dict[str, Dict[str, Any]]] # day -> meal_type -> recipe_id or manual text
 
 def generate_shopping_list_data(plan_ids: PlanIdsDict) -> ShoppingListDict:
-
-    flash('Generate shopping list data.', 'success')
-            
     """
     Generates shopping list data based on the meal plan IDs.
     Aggregates ingredients across unique recipes in the plan,
@@ -424,6 +511,7 @@ def generate_shopping_list_data(plan_ids: PlanIdsDict) -> ShoppingListDict:
     from collections import defaultdict
     shopping_list_by_aisle: ShoppingListDict = defaultdict(list)
     app.logger.debug(f"[SHOPLIST] Called generate_shopping_list_data with plan_ids: {plan_ids}")
+    
     # --- 1. Gather unique recipe IDs ---
     unique_recipe_ids = set()
     for day, meals in plan_ids.items():
@@ -431,18 +519,30 @@ def generate_shopping_list_data(plan_ids: PlanIdsDict) -> ShoppingListDict:
             if meal_info and meal_info.get('recipe_id') not in (None, -1):
                 unique_recipe_ids.add(meal_info['recipe_id'])
     app.logger.debug(f"[SHOPLIST] Unique recipe IDs for aggregation: {unique_recipe_ids}")
+    
     # --- 2. Aggregate ingredients ---
     ingredient_map = defaultdict(lambda: {'quantity': 0, 'unit': None, 'aisle': None, 'recipes': set()})
     if unique_recipe_ids:
-        recipes = Recipe.query.filter(Recipe.id.in_(unique_recipe_ids)).all()
+        # Eager load recipe_ingredients and their related ingredients
+        recipes = Recipe.query.options(
+            db.joinedload(Recipe.recipe_ingredients)
+            .joinedload(RecipeIngredient.ingredient)
+        ).filter(Recipe.id.in_(unique_recipe_ids)).all()
+        
         for recipe in recipes:
-            for ing in recipe.ingredients:
+            for recipe_ingredient in recipe.recipe_ingredients:
+                ing = recipe_ingredient.ingredient
                 key = (ing.name.strip().lower(), (ing.unit or '').strip().lower())
-                ingredient_map[key]['quantity'] += float(ing.quantity or 0)
+                try:
+                    ingredient_map[key]['quantity'] += float(recipe_ingredient.quantity or 0)
+                except (ValueError, TypeError):
+                    ingredient_map[key]['quantity'] = 0
                 ingredient_map[key]['unit'] = ing.unit
-                ingredient_map[key]['aisle'] = ing.aisle or 'Other'
+                ingredient_map[key]['aisle'] = ing.aisle.name if ing.aisle else 'Other'
                 ingredient_map[key]['recipes'].add(recipe.name)
+    
     app.logger.debug(f"[SHOPLIST] Aggregated ingredient map: {ingredient_map}")
+    
     # --- 3. Deduct pantry items ---
     pantry_items = {i.name.strip().lower(): i for i in PantryItem.query.all()}
     for (name, unit), data in ingredient_map.items():
@@ -451,7 +551,7 @@ def generate_shopping_list_data(plan_ids: PlanIdsDict) -> ShoppingListDict:
         if pantry_item and (pantry_item.unit or '').strip().lower() == (unit or '').strip().lower():
             try:
                 pantry_qty = float(pantry_item.quantity or 0)
-            except Exception:
+            except (ValueError, TypeError):
                 pantry_qty = 0
         remaining_qty = max(0, data['quantity'] - pantry_qty)
         if remaining_qty > 0:
@@ -464,6 +564,7 @@ def generate_shopping_list_data(plan_ids: PlanIdsDict) -> ShoppingListDict:
                 'pantry_deducted': min(data['quantity'], pantry_qty) if pantry_qty else 0
             })
             app.logger.debug(f"[SHOPLIST] Added item: {name}, qty: {remaining_qty}, aisle: {data['aisle']}, unit: {data['unit']}")
+    
     # --- 4. Add custom items from session (fallback) ---
     custom_items = session.get('shopping_list_state', {}).get('custom_items', [])
     for item in custom_items:
@@ -475,9 +576,11 @@ def generate_shopping_list_data(plan_ids: PlanIdsDict) -> ShoppingListDict:
             'is_custom': True
         })
         app.logger.debug(f"[SHOPLIST] Added custom item from session: {item}")
+
     # --- 5. Sort items within each aisle ---
     for aisle in shopping_list_by_aisle:
         shopping_list_by_aisle[aisle].sort(key=lambda x: x['name'])
+    
     app.logger.debug(f"[SHOPLIST] Final shopping_list_by_aisle: {shopping_list_by_aisle}")
     return shopping_list_by_aisle
 
@@ -495,46 +598,54 @@ from flask import jsonify, request
 
 @app.route('/toggle_meal_lock', methods=['POST'])
 @login_required
-@csrf.exempt # If using Flask-WTF CSRF, otherwise remove
+@csrf.exempt
 def toggle_meal_lock():
     data = request.get_json()
     
     slot_id = data.get('slot_id')
     locked = data.get('locked')
+    
     # Force locked to boolean
     if isinstance(locked, str):
         locked = locked.lower() == 'true'
+    
     if not slot_id or locked is None:
-        
         return jsonify({'success': False, 'error': 'Missing slot_id or locked'}), 400
-    # Update persistent lock in DB
-    # Find the recipe_id for this slot from the current plan
-    plan = session.get('current_plan_ids', {})
-    recipe_id = None
+    
+    # Get the current user's account
+    account = current_user.accounts.first()
+    if not account:
+        return jsonify({'success': False, 'error': 'No account found'}), 400
+    
     try:
         day, meal_type = slot_id.split('_')
-        recipe_info = plan.get(day, {}).get(meal_type, {})
-        recipe_id = recipe_info.get('recipe_id')
+        
+        # Find the meal plan entry
+        entry = MealPlan.query.filter_by(
+            account_id=account.id,
+            day=day,
+            meal_type=meal_type
+        ).first()
+        
+        if entry:
+            # Update the lock status
+            entry.is_locked = locked
+            db.session.commit()
+            app.logger.info(f"Updated lock status for {slot_id} to {locked}")
+            
+            # Update session
+            if 'meal_plan' in session and day in session['meal_plan'] and meal_type in session['meal_plan'][day]:
+                session['meal_plan'][day][meal_type]['is_locked'] = locked
+                session.modified = True
+                
+            return jsonify({'success': True})
+        else:
+            return jsonify({'success': False, 'error': 'Meal plan entry not found'}), 404
+            
     except Exception as e:
-        app.logger.warning(f"[TOGGLE_LOCK] Could not find recipe_id for {slot_id}: {e}")
-
-    if locked and recipe_id:
-        lock_info = {'recipe_id': recipe_id, 'manual': False, 'default': False, 'lock_type': 'user'}
-        update_persistent_lock(slot_id, lock_info)
-    else:
-        update_persistent_lock(slot_id, None)
-    # Update session lock state for this slot
-    session_locks = session.get('locked_meals', {})
-    if locked and recipe_id:
-        session_locks[slot_id] = {'recipe_id': recipe_id, 'manual': False, 'default': False, 'lock_type': 'user'}
-        
-    else:
-        session_locks.pop(slot_id, None)
-        
-    session['locked_meals'] = session_locks
-    session.modified = True
-    
-    return jsonify({'success': True})
+        db.session.rollback()
+        app.logger.error(f"Error toggling meal lock: {str(e)}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 def generate_meal_plan(num_people: int, locked_meals: LockedMealsDict, days: Optional[List[str]] = None) -> PlanIdsDict:
     app.logger.info("=== generate_meal_plan function called ===")
@@ -591,7 +702,7 @@ def generate_meal_plan(num_people: int, locked_meals: LockedMealsDict, days: Opt
         try:
             day, meal_type = slot_id.split('_', 1)
             if day not in days or meal_type not in meal_types:
-                print(f"  ⚠️ Invalid slot format or day/meal type: {slot_id}")
+                print(f"  ! Invalid slot format or day/meal type: {slot_id}")
                 continue
                 
             if isinstance(lock_info, dict) and 'recipe_id' in lock_info:
@@ -603,7 +714,7 @@ def generate_meal_plan(num_people: int, locked_meals: LockedMealsDict, days: Opt
                         'status': 'locked',
                         'locked_by_main': True
                     }
-                    print(f"  🔒 Locked {day} {meal_type}: Manual Entry")
+                    print(f"  [LOCKED] {day} {meal_type}: Manual Entry")
                 elif db.session.get(Recipe, recipe_id):  # Valid recipe
                     plan_ids[day][meal_type] = {
                         'recipe_id': recipe_id,
@@ -611,58 +722,120 @@ def generate_meal_plan(num_people: int, locked_meals: LockedMealsDict, days: Opt
                         'locked_by_main': True,
                         'default_lock': False
                     }
-                    print(f"  🔒 Locked {day} {meal_type}: Recipe ID {recipe_id}")
+                    print(f"  [LOCKED] {day} {meal_type}: Recipe ID {recipe_id}")
                     locked_slots.add((day, meal_type))
                 else:
-                    print(f"  ⚠️ Recipe ID {recipe_id} not found for slot {slot_id}")
+                    print(f"  [WARNING] Recipe ID {recipe_id} not found for slot {slot_id}")
         except Exception as e:
-            print(f"  ❌ Error processing locked meal {slot_id}: {str(e)}")
+            print(f"  [ERROR] Error processing locked meal {slot_id}: {str(e)}")
             app.logger.error(f"Error processing locked meal {slot_id}: {e}")
     
+    # Track used recipe IDs to prevent duplicates (except for leftovers and defaults)
+    used_recipe_ids = set()
+    
+    # Add locked recipe IDs to used set
+    for day in days:
+        for meal_type in meal_types:
+            meal = plan_ids[day][meal_type]
+            if meal and meal.get('recipe_id') and meal.get('recipe_id') != -1:
+                used_recipe_ids.add(meal['recipe_id'])
+    
+    # Track all recipes that have been used in the plan
+    all_used_recipe_ids = set(used_recipe_ids)  # Start with locked recipes
+    
+    # Create a mapping of default recipe IDs to their meal types
+    default_recipe_to_meal_type = {int(recipe_id): meal_type 
+                                 for meal_type, recipe_id in default_meals.items() 
+                                 if recipe_id}
+    
     # --- PHASE 2: Generate meals by type ---
-    print("\n=== GENERATING MEALS ===")
-    for meal_type in meal_types:  # Process in order: Breakfast, Lunch, Dinner
-        print(f"\n🔹 Processing {meal_type}s...")
+    print("\n[GENERATING] MEALS")
+    
+    # First, create a list of all days and meal types that need to be filled
+    meals_to_fill = []
+    for day in days:
+        for meal_type in meal_types:
+            # Skip if already locked or assigned
+            if (day, meal_type) in locked_slots or plan_ids[day][meal_type] is not None:
+                continue
+            meals_to_fill.append((day, meal_type))
+    
+    # Shuffle the meals to fill to ensure randomness
+    random.shuffle(meals_to_fill)
+    
+    # Process each meal that needs to be filled
+    for day, meal_type in meals_to_fill:
+        print(f"\n[PROCESSING] {day} {meal_type}...")
         
-        # Get available recipes for this meal type (excluding default if needed)
-        available_recipes = [r for r in recipes_by_type[meal_type] 
-                           if r.id != default_meals[meal_type] or not default_meals[meal_type]]
+        # Get the default recipe for this meal type (if any)
+        default_recipe_id = default_meals.get(meal_type)
+        
+        # Filter available recipes for this meal type
+        available_recipes = []
+        for recipe in recipes_by_type[meal_type]:
+            # Always include the default recipe for this meal type (even if used in other meal types)
+            if recipe.id == default_recipe_id:
+                available_recipes.append(recipe)
+            # Include non-default recipes that haven't been used in any meal type
+            elif recipe.id not in all_used_recipe_ids and recipe.id not in default_recipe_to_meal_type:
+                available_recipes.append(recipe)
+        
+        # Fallback to all recipes if needed (shouldn't be necessary with default recipes)
         if not available_recipes and recipes_by_type[meal_type]:
-            available_recipes = recipes_by_type[meal_type]  # Fallback to all recipes if needed
+            available_recipes = [r for r in recipes_by_type[meal_type] 
+                              if r.id not in all_used_recipe_ids]
         
-        # Process each day for this meal type
-        for day in days:
-            # Skip if already locked
-            if (day, meal_type) in locked_slots:
-                continue
-                
-            # Skip if already assigned (shouldn't happen, but just in case)
-            if plan_ids[day][meal_type] is not None:
-                continue
-                
-            # Step 1: Try to assign default meal if available
-            if default_meals[meal_type]:
+        print(f"  Available {meal_type} recipes: {len(available_recipes)} (excluding {len(all_used_recipe_ids)} used recipes)")
+        
+        # Step 1: Try to assign default meal if available
+        if default_recipe_id:
+            # Only use default meal if it's the default for this specific meal type
+            if int(default_recipe_id) in default_recipe_to_meal_type.get(meal_type, []):
                 plan_ids[day][meal_type] = {
-                    'recipe_id': int(default_meals[meal_type]),
+                    'recipe_id': int(default_recipe_id),
                     'status': 'default',
                     'locked_by_main': False,
                     'default_lock': True
                 }
-                print(f"  ✅ Set {day} {meal_type} to default recipe {default_meals[meal_type]}")
+                # Don't add default recipes to used set to allow multiple instances in this meal type
+                print(f"  [ADDED] {day} {meal_type} to default recipe {default_recipe_id}")
                 continue
-                
-            # Step 2: Assign random meal if available
-            if available_recipes:
-                chosen_recipe = random.choice(available_recipes)
+        
+        # Step 2: Assign random meal if available
+        if available_recipes:
+            # Filter out recipes that are default for any meal type (unless it's the current meal type's default)
+            valid_recipes = [r for r in available_recipes 
+                           if r.id not in default_recipe_to_meal_type or 
+                           (default_meals.get(meal_type) and r.id == int(default_meals[meal_type]))]
+            
+            if valid_recipes:
+                chosen_recipe = random.choice(valid_recipes)
                 plan_ids[day][meal_type] = {
                     'recipe_id': chosen_recipe.id,
                     'status': 'new',
                     'locked_by_main': False
                 }
-                print(f"  🎲 Assigned random {meal_type} to {day}: {chosen_recipe.name} (ID: {chosen_recipe.id}, Servings: {chosen_recipe.servings})")
+                # Only add to used set if it's not a default recipe
+                if chosen_recipe.id not in default_recipe_to_meal_type:
+                    all_used_recipe_ids.add(chosen_recipe.id)
+                print(f"  [ASSIGNED] Random {meal_type} to {day}: {chosen_recipe.name} (ID: {chosen_recipe.id})")
+            else:
+                print(f"  [WARNING] No valid non-default recipes available for {day} {meal_type}")
+        else:
+            print(f"  [WARNING] No available recipes for {day} {meal_type}")
+            
+        # If we couldn't assign a recipe, mark the slot as empty
+        if plan_ids[day][meal_type] is None:
+            print(f"  [ERROR] Failed to assign a recipe to {day} {meal_type}")
+            plan_ids[day][meal_type] = {
+                'recipe_id': -1,
+                'status': 'empty',
+                'manual_text': 'No recipe available',
+                'locked_by_main': False
+            }
     
     # --- PHASE 3: Process leftovers ---
-    print("\n=== PROCESSING LEFTOVERS ===")
+    print("\n[PROCESSING] LEFTOVERS")
     # Create a list to track which days already have leftovers assigned
     leftover_days = {day: set() for day in days}
     
@@ -687,7 +860,7 @@ def generate_meal_plan(num_people: int, locked_meals: LockedMealsDict, days: Opt
                 if extra_meals <= 0:
                     continue
                     
-                print(f"  🍲 {day} {meal_type} has {recipe.servings} servings for {num_people} people → {extra_meals} extra meal(s) possible")
+                print(f"  [INFO] {day} {meal_type} has {recipe.servings} servings for {num_people} people -> {extra_meals} extra meal(s) possible")
                 
                 # Find the next available day for leftovers of this meal type
                 leftovers_assigned = 0
@@ -703,36 +876,38 @@ def generate_meal_plan(num_people: int, locked_meals: LockedMealsDict, days: Opt
                         # If this is the same recipe as the locked meal, count it as used
                         next_meal = plan_ids[next_day][meal_type]
                         if next_meal and next_meal.get('recipe_id') == recipe.id:
-                            print(f"    ℹ️  Found matching locked meal at {next_day} {meal_type}, counting as leftover usage")
+                            print(f"    [INFO] Found matching locked meal at {next_day} {meal_type}, counting as leftover usage")
                             leftovers_assigned += 1
                             # If we've used up all extra meals, break the loop
                             if leftovers_assigned >= extra_meals:
                                 break
                         continue
                     
-                    # Assign the leftover
+                    # Assign the leftover with origin information
                     plan_ids[next_day][meal_type] = {
                         'recipe_id': recipe.id,
                         'status': 'leftover',
                         'locked_by_main': False,
                         'leftover_from': f"{day}_{meal_type}",
+                        'leftover_from_day': day,
+                        'leftover_from_meal': meal_type,
                         'servings_used': num_people
                     }
                     leftover_days[next_day].add(meal_type)
                     leftovers_assigned += 1
-                    print(f"    ♻️  Set {next_day} {meal_type} as leftover from {day} {meal_type}")
+                    print(f"    [ASSIGNED] Set {next_day} {meal_type} as leftover from {day} {meal_type}")
                     
                     # Stop if we've assigned all possible leftovers
                     if leftovers_assigned >= extra_meals:
                         break
                         
             except Exception as e:
-                print(f"    ❌ Error processing leftovers for {day} {meal_type}: {str(e)}")
+                print(f"    [ERROR] Error processing leftovers for {day} {meal_type}: {str(e)}")
                 app.logger.error(f"Error processing leftovers for {day} {meal_type}: {e}")
     
     # --- FINAL VALIDATION AND LOGGING ---
-    print("\n=== MEAL PLAN GENERATION COMPLETE ===")
-    print("Final meal plan summary:")
+    print("\n[COMPLETE] MEAL PLAN GENERATION FINISHED\n")
+    print("\n[MEAL PLAN] Final Meal Plan Summary:")
     
     # Count stats
     stats = {
@@ -749,17 +924,17 @@ def generate_meal_plan(num_people: int, locked_meals: LockedMealsDict, days: Opt
         for meal_type in meal_types:
             meal = plan_ids[day][meal_type]
             if not meal:
-                print(f"  {meal_type}: ❌ Not assigned")
+                print(f"  {meal_type}: Not assigned")
                 stats['empty'] += 1
                 continue
                 
             status_emoji = {
-                'locked': '🔒',
-                'default': '🏠',
-                'new': '🆕',
-                'leftover': '♻️',
-                'manual': '✏️'
-            }.get(meal.get('status', ''), '❓')
+                'locked': '*',
+                'default': '+',
+                'new': '~',
+                'leftover': '^',
+                'manual': '#'
+            }.get(meal.get('status', ''), '?')
             
             if meal.get('recipe_id') == -1:  # Manual entry
                 print(f"  {meal_type}: {status_emoji} Manual Entry: {meal.get('manual_text', '')}")
@@ -770,7 +945,7 @@ def generate_meal_plan(num_people: int, locked_meals: LockedMealsDict, days: Opt
                 status = meal.get('status', 'unknown')
                 print(f"  {meal_type}: {status_emoji} {name} (ID: {meal['recipe_id']}, Status: {status})")
                 if meal.get('leftover_from'):
-                    print(f"    ↳ Leftover from: {meal['leftover_from']}")
+                    print(f"    -> Leftover from: {meal['leftover_from']}")
                 
                 # Update stats
                 if status == 'locked':
@@ -789,10 +964,10 @@ def generate_meal_plan(num_people: int, locked_meals: LockedMealsDict, days: Opt
     # Print summary
     print("\n=== MEAL PLAN STATISTICS ===")
     print(f"Total meals: {stats['total_meals']}")
-    print(f"Locked meals: {stats['locked']}")
-    print(f"Default meals: {stats['default']}")
-    print(f"Random meals: {stats['random']}")
-    print(f"Leftover meals: {stats['leftover']}")
+    print(f"  - Locked meals: {stats['locked']}")
+    print(f"  - Default meals: {stats['default']}")
+    print(f"  - Random meals: {stats['random']}")
+    print(f"  - Leftovers planned: {stats['leftover']} meals")
     print(f"Empty slots: {stats['empty']}")
     
     return plan_ids
@@ -906,587 +1081,927 @@ app.add_url_rule('/unlock_all_meals', view_func=unlock_all_meals, methods=['POST
 @app.route('/', methods=['GET', 'POST'])
 @login_required
 def dashboard():
-    # Initialize session variables if they don't exist
-    if 'num_people' not in session:
-        session['num_people'] = 2
-    if 'locked_meals' not in session:
-        sync_session_locks_with_db()
-
-    # Fetch user meal plan settings
+    # Get the current user's account
     account = current_user.accounts.first()
+    if not account:
+        flash('No account found. Please contact support.', 'error')
+        return redirect(url_for('logout'))
+    
+    # Get account settings
     settings = getattr(account, 'settings', None)
-    meal_plan_start_day = getattr(settings, 'meal_plan_start_day', 'Monday') if settings else 'Monday'
-    meal_plan_duration = getattr(settings, 'meal_plan_duration', 7) if settings else 7
-    num_people = getattr(settings, 'num_people', 2) if settings else 2
+    if not settings:
+        # Create default settings if they don't exist
+        settings = AccountSettings(account=account)
+        db.session.add(settings)
+        db.session.commit()
+    
+    # Get meal plan settings with defaults
+    meal_plan_start_day = getattr(settings, 'meal_plan_start_day', 'Monday')
+    meal_plan_duration = getattr(settings, 'meal_plan_duration', 7)
+    num_people = getattr(settings, 'num_people', 2)
+    
+    # Validate and sanitize settings
     try:
-        meal_plan_duration = int(meal_plan_duration)
-    except Exception:
+        meal_plan_duration = max(1, min(31, int(meal_plan_duration)))
+    except (ValueError, TypeError):
         meal_plan_duration = 7
-    if meal_plan_duration < 1 or meal_plan_duration > 31:
-        meal_plan_duration = 7
+    
     try:
-        num_people = int(num_people)
-    except Exception:
+        num_people = max(1, int(num_people))
+    except (ValueError, TypeError):
         num_people = 2
-    if num_people < 1:
-        num_people = 2
-
+    
     # Compute the days for the plan, starting from meal_plan_start_day
     start_idx = ALL_DAYS.index(meal_plan_start_day) if meal_plan_start_day in ALL_DAYS else 0
     days = [ALL_DAYS[(start_idx + i) % 7] for i in range(meal_plan_duration)]
-
-    # Handle POST request (form submission)
+    
+    # Sync meal plan with session
+    sync_meal_plan_with_session(account.id)
+    
+    # Get the current meal plan from session
+    meal_plan = session.get('meal_plan', {})
+    
+    # Handle POST request (form submission for generating a new meal plan)
     if request.method == 'POST':
-        # No longer handle num_people from dashboard form; it is now only set via settings page
-        
-        # Check if this is a 'Lock All' request
-        lock_all = request.form.get('lock_all') == 'on'
-        
-        # Initialize new locked meals dictionary
-        new_locked_meals: Dict[str, Dict[str, Any]] = {}
-        plan_ids_before_update: PlanIdsDict = session.get('current_plan_ids', {})
-
-        # --- Loop through all possible slots and determine lock state based on form data ---
+        # Get locked meals from the database
+        locked_meals = {}
         for day in days:
             for meal_type in meal_types:
                 slot_id = f"{day}_{meal_type}"
-                # Get relevant form inputs for this slot
-                manual_select = request.form.get(f'manual_select_{slot_id}')
-                manual_text = request.form.get(f'manual_text_{slot_id}', '').strip()
-                lock_checkbox = request.form.get(f'lock_{slot_id}')
-                recipe_id_in_slot_str = request.form.get(f"recipeid_{slot_id}")
+                meal_entry = MealPlan.query.filter_by(
+                    account_id=account.id,
+                    day=day,
+                    meal_type=meal_type,
+                    is_locked=True
+                ).first()
                 
-                app.logger.debug(f"Processing slot {slot_id}: manual_select={manual_select}, lock_checkbox={lock_checkbox}, recipe_id={recipe_id_in_slot_str}")
-
-                lock_info_to_set: Optional[Dict[str, Any]] = None
-
-                # --- Determine Lock State Based on Priority ---
-                # 1. Manual Text Input (Highest priority)
-                if manual_select == "-1" and manual_text:
-                    lock_info_to_set = {
-                        'recipe_id': -1,
-                        'text': manual_text,
-                        'manual': True,
-                        'default': False
+                if meal_entry and meal_entry.recipe_id:
+                    locked_meals[slot_id] = {
+                        'recipe_id': meal_entry.recipe_id,
+                        'is_locked': True
                     }
-                    app.logger.info(f"Setting manual text lock for {slot_id}: {manual_text}")
-
-                # 2. Manual Recipe Selection
-                elif manual_select and manual_select != "0" and manual_select != "-1":
-                    try:
-                        recipe_id = int(manual_select)
-                        if db.session.get(Recipe, recipe_id):
-                            lock_info_to_set = {
-                                'recipe_id': recipe_id,
-                                'manual': True,
-                                'default': False
-                            }
-                            app.logger.info(f"Setting manual recipe lock for {slot_id}: {recipe_id}")
-                        else:
-                            flash(f"Selected recipe ID {recipe_id} for {slot_id} not found. Selection ignored.", "warning")
-                    except (ValueError, TypeError):
-                        flash(f"Invalid recipe selection value '{manual_select}' for {slot_id}. Selection ignored.", "warning")
-
-                # 3. Checkbox or Lock All
-                else:
-                    # IMPORTANT FIX: Explicitly handle both checked and unchecked states
-                    should_lock_this_slot = (lock_checkbox == 'on') or lock_all
-                    app.logger.debug(f"Slot {slot_id} should_lock: {should_lock_this_slot}, lock_checkbox: {lock_checkbox}, lock_all: {lock_all}")
-                    
-                    # If checkbox is unchecked and not a lock_all request, explicitly remove the lock
-                    if not should_lock_this_slot and not lock_all:
-                        # Explicitly set to None to remove the lock
-                        lock_info_to_set = None
-                        app.logger.info(f"Removing lock for {slot_id} (checkbox unchecked)")
-                    elif should_lock_this_slot:
-                        current_recipe_id: Optional[int] = None
-                        try:
-                            if recipe_id_in_slot_str and recipe_id_in_slot_str.isdigit():
-                                current_recipe_id = int(recipe_id_in_slot_str)
-                            elif lock_all:
-                                slot_info = plan_ids_before_update.get(day, {}).get(meal_type, {})
-                                plan_recipe_id = slot_info.get('recipe_id')
-                                if plan_recipe_id and plan_recipe_id != -1:
-                                    current_recipe_id = plan_recipe_id
-                        except (ValueError, TypeError):
-                            flash(f"Invalid recipe ID format '{recipe_id_in_slot_str}' found for {slot_id} during lock.", "warning")
-                            current_recipe_id = None
-
-                        if current_recipe_id and current_recipe_id > 0:
-                            if db.session.get(Recipe, current_recipe_id):
-                                # FIXED: Ensure manual flag is set to False for user locks
-                                lock_info_to_set = {
-                                    'recipe_id': current_recipe_id,
-                                    'manual': False,  # This is a user lock, not a manual lock
-                                    'default': False,
-                                    'lock_type': 'user'  # Add lock type information
-                                }
-                                app.logger.info(f"Setting user lock for {slot_id}: {current_recipe_id}, manual=False, lock_type=user")
-                            else:
-                                flash(f"Recipe ID {current_recipe_id} for {slot_id} not found. Lock not applied.", "warning")
-                                lock_info_to_set = None
-
-                # Update the locked_meals dictionary with the determined lock state
-                if lock_info_to_set is not None:
-                    new_locked_meals[slot_id] = lock_info_to_set
-                elif slot_id in session.get('locked_meals', {}):
-                    # If lock_info_to_set is None and there was a previous lock, remove it
-                    del session['locked_meals'][slot_id]
-
-        # Update session with new locked meals
-        session['locked_meals'] = new_locked_meals
-        app.logger.info(f"Updated session locked_meals: {new_locked_meals}")
-
-        # Update persistent locks in database
-        try:
-            for slot_id, lock_info in new_locked_meals.items():
-                update_persistent_lock(slot_id, lock_info)
-            flash("Meal locks updated successfully.", "success")
-        except Exception as e:
-            app.logger.error(f"Error updating persistent locks: {e}")
-            flash("Error updating meal locks. Please try again.", "error")
-
-        # Sync session with database locks
-        sync_session_locks_with_db()
         
-        # Log the final state of locked_meals for debugging
-        app.logger.info(f"Final locked_meals state: {session.get('locked_meals')}")
+        try:
+            # Generate a new meal plan
+            new_plan = generate_meal_plan(num_people, locked_meals, days)
+            
+            # Start a transaction to update the meal plan
+            try:
+                # Delete existing meal plan entries for this account
+                MealPlan.query.filter_by(account_id=account.id).delete()
+                
+                # Create new meal plan entries
+                for day, meals in new_plan.items():
+                    for meal_type, meal_info in meals.items():
+                        is_locked = locked_meals.get(f"{day}_{meal_type}", {}).get('is_locked', False)
+                        is_leftover = meal_info.get('status') == 'leftover'
+                        leftover_from_day = meal_info.get('leftover_from_day') if is_leftover else None
+                        leftover_from_meal_type = meal_info.get('leftover_from_meal') if is_leftover else None
+                        
+                        entry = MealPlan(
+                            account_id=account.id,
+                            day=day,
+                            meal_type=meal_type,
+                            recipe_id=meal_info.get('recipe_id'),
+                            is_locked=is_locked,
+                            is_leftover=is_leftover,
+                            leftover_from_day=leftover_from_day,
+                            leftover_from_meal_type=leftover_from_meal_type
+                        )
+                        db.session.add(entry)
+                
+                db.session.commit()
+                
+                # Update session with the new plan
+                session['meal_plan'] = get_meal_plan(account.id)
+                session.modified = True
+                
+                flash('Meal plan generated successfully!', 'success')
+                
+            except Exception as e:
+                db.session.rollback()
+                app.logger.error(f"Error saving meal plan to database: {str(e)}", exc_info=True)
+                flash('Error saving meal plan. Please try again.', 'error')
+            
+            return redirect(url_for('dashboard'))
+            
+        except Exception as e:
+            app.logger.error(f"Error generating meal plan: {str(e)}", exc_info=True)
+            flash(f'Error generating meal plan: {str(e)}', 'error')
+    
+    # Fetch all recipes for the manual selection dropdown
+    all_recipes = Recipe.query.filter(
+        (Recipe.account_id == account.id) | (Recipe.is_public == True)
+    ).all()
+    
+    # Get the current meal plan from the database
+    meal_plan = get_meal_plan(account.id)
+    
+    return render_template(
+        'dashboard.html',
+        days=days,
+        meal_types=meal_types,
+        all_recipes=all_recipes,
+        num_people=num_people,
+        meal_plan=meal_plan
+    )
 
-        # 
-        plan_ids = generate_meal_plan(session['num_people'], session['locked_meals'])
-        session['current_plan_ids'] = plan_ids
-        session.modified = True
 
-        # Clear shopping list state as the plan has changed
-        session.pop('shopping_list_state', None)
+@app.route('/api/ingredients', methods=['GET'])
+@login_required
+def get_all_ingredients():
+    """API endpoint to get all ingredients with their details for autocomplete."""
+    try:
+        ingredients = Ingredient.query.options(joinedload(Ingredient.aisle)).all()
+        return jsonify([{
+            'id': ing.id,
+            'name': ing.name,
+            'unit': ing.unit or 'unit',
+            'aisle': ing.aisle.name if ing.aisle else 'Misc'
+        } for ing in ingredients])
+    except Exception as e:
+        current_app.logger.error(f"Error fetching ingredients: {str(e)}")
+        return jsonify({'error': 'Failed to fetch ingredients'}), 500
 
-        # Regenerate the shopping list
-        generate_shopping_list()
-        flash("Shopping list regenerated.", "success")
-
-        return redirect(url_for('dashboard'))
-
-    # --- GET Request Rendering ---
-    # Ensure a plan exists in the session
-    if 'current_plan_ids' not in session:
-        # Generate plan with correct days and duration
-        session['current_plan_ids'] = generate_meal_plan(num_people, session.get('locked_meals', {}), days=days)
-        session.modified = True
-
-    plan_ids_from_session: PlanIdsDict = session['current_plan_ids']
-
-    # Fetch all unique recipe objects needed for the current plan efficiently
-    all_recipe_ids_in_plan: Set[int] = {
-        mi['recipe_id']
-        for dp in plan_ids_from_session.values()
-        for mi in dp.values()
-        if mi and mi.get('recipe_id') and mi['recipe_id'] != -1 # Check existence and valid ID
-    }
-    recipes_in_plan_dict: Dict[int, Recipe] = {
-        r.id: r for r in Recipe.query.filter(Recipe.id.in_(all_recipe_ids_in_plan)).all()
-    } if all_recipe_ids_in_plan else {}
-
-    # Prepare the plan data structure for the template
-    plan_for_template = {day: {meal_type: None for meal_type in meal_types} for day in days}
-    active_locked_meals_state = session.get('locked_meals', {}) # Get current lock state for template
-    app.logger.debug(f"[DASHBOARD] Passing locked_meals to template: {active_locked_meals_state}")
-
-    for day in days:
-        for meal_type in meal_types:
-            meal_info_ids = plan_ids_from_session.get(day, {}).get(meal_type)
-            slot_id = f"{day}_{meal_type}" # Used for referencing locks in template
-
-            # Default display info for an empty slot
-            display_info = {
-                'recipe': None,
-                'status': 'empty',
-                'locked_by_main': False,
-                'is_manual_entry': False,
-                'default_lock': False,
-                'manual_text': None
-            }
-
-            if meal_info_ids:
-                 recipe_id = meal_info_ids.get('recipe_id')
-                 status = meal_info_ids.get('status', 'empty') # Default status if missing
-
-                 # Update display info with data from the plan session state
-                 display_info.update({
-                     'status': status,
-                     'locked_by_main': meal_info_ids.get('locked_by_main', False),
-                     'default_lock': meal_info_ids.get('default_lock', False)
-                 })
-
-                 # Handle manual entry display (-1)
-                 if recipe_id == -1:
-                     display_info.update({
-                         'manual_text': meal_info_ids.get('manual_text', 'Manual Entry'),
-                         'is_manual_entry': True,
-                         'status': 'locked' # Manual entries are always locked
-                     })
-                 # Handle regular recipe display
-                 elif recipe_id is not None and recipe_id > 0:
-                     # Fetch the Recipe object from our pre-fetched dictionary
-                     recipe_object = recipes_in_plan_dict.get(recipe_id)
-                     if recipe_object:
-                         display_info['recipe'] = recipe_object
-                         # Keep the status from the plan ('new', 'leftover', 'locked')
-                         display_info['status'] = status
-                     else:
-                         # Recipe ID exists in plan, but not in DB (deleted?)
-                         display_info['recipe'] = None
-                         display_info['status'] = 'deleted' # Indicate missing recipe
-                         # Optional: Log this inconsistency
-                         app.logger.warning(f"Recipe ID {recipe_id} found in plan but not in database for slot {slot_id}.")
-
-            plan_for_template[day][meal_type] = display_info
-
-    # Fetch all recipes for the dropdown menu
-    recipes_for_dropdown = Recipe.query.order_by(Recipe.name).all()
-    # Get distinct aisles for the shopping list
-    distinct_aisles = get_distinct_aisles()
-
-    return render_template('dashboard.html',
-                           plan=plan_for_template,
-                           num_people=num_people,
-                           locked_meals=active_locked_meals_state, # Pass the raw lock state for form defaults
-                           days=days,
-                           meal_types=meal_types,
-                           all_recipes=recipes_for_dropdown, # For dropdowns
-                           distinct_aisles=distinct_aisles) # For shopping list add form
-
+@app.route('/api/ingredients', methods=['POST'])
+@login_required
+def add_ingredient_api():
+    try:
+        import traceback
+        print("Received request data:", request.get_json())  # Debug log
+        data = request.get_json()
+        name = data.get('name', '').strip()
+        unit = data.get('unit', '').strip()
+        aisle_name = data.get('aisle', '').strip()
+        
+        print(f"Processing new ingredient - Name: {name}, Unit: {unit}, Aisle: {aisle_name}")  # Debug log
+        
+        # Validate input
+        if not all([name, unit, aisle_name]):
+            error_msg = f"Missing required fields. Name: {name}, Unit: {unit}, Aisle: {aisle_name}"
+            print(error_msg)  # Debug log
+            return jsonify({'success': False, 'message': 'All fields are required'}), 400
+            
+        # Check if ingredient already exists (case-insensitive)
+        existing = Ingredient.query.filter(func.lower(Ingredient.name) == name.lower()).first()
+        if existing:
+            print(f"Ingredient already exists: {name}")  # Debug log
+            return jsonify({
+                'success': False, 
+                'message': f'Ingredient "{name}" already exists',
+                'ingredient': {
+                    'id': existing.id,
+                    'name': existing.name,
+                    'unit': existing.unit,
+                    'aisle': existing.aisle.name if existing.aisle else ''
+                }
+            }), 400
+            
+        # Find or create aisle
+        print(f"Looking for aisle: {aisle_name}")  # Debug log
+        aisle = Aisle.query.filter(func.lower(Aisle.name) == aisle_name.lower()).first()
+        if not aisle:
+            print(f"Creating new aisle: {aisle_name}")  # Debug log
+            try:
+                aisle = Aisle(name=aisle_name)
+                db.session.add(aisle)
+                db.session.flush()  # Get the new aisle ID
+                print(f"Created new aisle with ID: {aisle.id}")  # Debug log
+            except Exception as e:
+                print(f"Error creating aisle: {str(e)}")  # Debug log
+                raise
+            
+        # Create new ingredient
+        print(f"Creating new ingredient: {name}")  # Debug log
+        try:
+            new_ingredient = Ingredient(
+                name=name,
+                unit=unit,
+                aisle_id=aisle.id
+            )
+            db.session.add(new_ingredient)
+            db.session.commit()
+            print(f"Successfully created ingredient with ID: {new_ingredient.id}")  # Debug log
+            
+            return jsonify({
+                'success': True,
+                'message': 'Ingredient added successfully',
+                'ingredient': {
+                    'id': new_ingredient.id,
+                    'name': new_ingredient.name,
+                    'unit': new_ingredient.unit,
+                    'aisle': aisle_name
+                }
+            })
+            
+        except Exception as e:
+            print(f"Error creating ingredient: {str(e)}")  # Debug log
+            db.session.rollback()
+            raise
+        
+    except Exception as e:
+        db.session.rollback()
+        error_traceback = traceback.format_exc()
+        print(f"Error in add_ingredient_api: {error_traceback}")  # Debug log
+        return jsonify({
+            'success': False,
+            'message': f'Failed to add ingredient. Error: {str(e)}',
+            'debug': error_traceback if app.debug else None
+        }), 500
 
 @app.route('/add', methods=['GET', 'POST'])
+@login_required
 def add_recipe():
-    # Passed to template to repopulate form on error
-    current_data = request.form if request.method == 'POST' else {}
-
+    # Get all distinct aisle names from the Aisle table
+    distinct_aisles = db.session.query(Aisle.name).distinct().all()
+    distinct_aisles = [str(aisle[0]) for aisle in distinct_aisles if aisle[0] and (isinstance(aisle[0], str) and aisle[0].strip())]
+    
+    # Get all ingredients for the dropdown with their details
+    all_ingredients = db.session.query(
+        Ingredient.id,
+        Ingredient.name,
+        Ingredient.unit,
+        Aisle.name.label('aisle_name')
+    ).join(Aisle, Ingredient.aisle_id == Aisle.id)\
+     .order_by(Ingredient.name).all()
+    
+    # Convert to list of dictionaries for JSON serialization
+    ingredients_data = [{
+        'id': ing[0],  # First item is id
+        'name': ing[1],  # Second item is name
+        'unit': ing[2] or 'unit',  # Third item is unit
+        'aisle': ing[3] or 'Misc'  # Fourth item is aisle_name
+    } for ing in all_ingredients]
+    
+    # Convert all_ingredients to a list of dictionaries for JSON serialization
+    all_ingredients = [{
+        'id': ing[0],
+        'name': ing[1],
+        'unit': ing[2] or 'unit',
+        'aisle': ing[3] or 'Misc'
+    } for ing in all_ingredients]
+    
+    # Initialize form data for GET request
+    form_ingredients = [{'id': '', 'name': '', 'quantity': '', 'unit': '', 'aisle': ''}]
+    
     if request.method == 'POST':
         try:
-            name = request.form.get('name', '').strip()
-            # Use empty string as default if method is not provided or empty
-            method = request.form.get('method', '').strip()
-            servings_str = request.form.get('servings', '').strip()
-            ingredients_raw = request.form.get('ingredients', '').strip()
-            source_link = request.form.get('source_link', '').strip() or None
-            # Boolean flags from checkboxes
-            is_breakfast = 'is_breakfast' in request.form
-            is_lunch = 'is_lunch' in request.form
-            is_dinner = 'is_dinner' in request.form
+            # Determine if the request is JSON or form data
+            if request.is_json:
+                data = request.get_json()
+                name = data.get('name', '').strip()
+                method = data.get('method', '').strip()
+                servings_str = str(data.get('servings', '1')).strip()
+                source_link = data.get('source_link', '').strip() or None
+                is_breakfast = data.get('is_breakfast', False)
+                is_lunch = data.get('is_lunch', False)
+                is_dinner = data.get('is_dinner', False)
+                
+                # Get ingredients from the JSON data
+                ingredients = data.get('ingredients', [])
+                ingredient_ids = [ing.get('ingredient_id') for ing in ingredients]
+                ingredient_quantities = [ing.get('quantity') for ing in ingredients]
+                ingredient_units = [ing.get('unit', '') for ing in ingredients]
+                ingredient_aisles = [ing.get('aisle', '') for ing in ingredients]
+                ingredient_names = [ing.get('name', '') for ing in ingredients]
+            else:
+                # Get form data from form submission
+                name = request.form.get('name', '').strip()
+                method = request.form.get('method', '').strip()
+                servings_str = request.form.get('servings', '1').strip()
+                source_link = request.form.get('source_link', '').strip() or None
+                is_breakfast = 'is_breakfast' in request.form
+                is_lunch = 'is_lunch' in request.form
+                is_dinner = 'is_dinner' in request.form
+
+                # Get ingredient data from form - new format with arrays
+                ingredient_ids = request.form.getlist('ingredient_ids[]')
+                ingredient_quantities = request.form.getlist('ingredient_quantities[]')
+                ingredient_units = request.form.getlist('ingredient_units[]')
+                ingredient_aisles = request.form.getlist('ingredient_aisles[]')
+                ingredient_names = request.form.getlist('ingredient_names[]')
 
             # --- Validation ---
             errors = False
             if not name:
+                if request.is_json:
+                    return jsonify({
+                        'success': False,
+                        'message': 'Recipe name is required.'
+                    }), 400
                 flash("Recipe name is required.", "danger")
                 errors = True
+                
             if not servings_str:
+                if request.is_json:
+                    return jsonify({
+                        'success': False,
+                        'message': 'Servings is required.'
+                    }), 400
                 flash("Servings is required.", "danger")
                 errors = True
-            if not ingredients_raw:
-                flash("Ingredients are required.", "danger")
+            
+            # Check for at least one valid ingredient
+            if not any(iid.strip() or name.strip() for iid, name in zip(ingredient_ids, ingredient_names) if iid and iid.strip()):
+                if request.is_json:
+                    return jsonify({
+                        'success': False,
+                        'message': 'At least one ingredient is required.'
+                    }), 400
+                flash("At least one ingredient is required.", "danger")
                 errors = True
 
-            servings_int = None
+            # Validate servings
+            servings_int = 1
             if servings_str:
                 try:
                     servings_int = int(servings_str)
                     if servings_int <= 0:
+                        if request.is_json:
+                            return jsonify({
+                                'success': False,
+                                'message': 'Servings must be a positive whole number.'
+                            }), 400
                         flash("Servings must be a positive whole number.", "danger")
                         errors = True
                 except ValueError:
+                    if request.is_json:
+                        return jsonify({
+                            'success': False,
+                            'message': 'Servings must be a valid whole number.'
+                        }), 400
                     flash("Servings must be a valid whole number.", "danger")
                     errors = True
 
-            # Check for duplicate recipe name (case-insensitive)
-            if name and Recipe.query.filter(func.lower(Recipe.name) == name.lower()).first():
-                flash(f"A recipe named '{name}' already exists. Please choose a different name.", "warning")
+            # Check for duplicate recipe name (case-insensitive) across user's accounts
+            if name and Recipe.query.filter(
+                func.lower(Recipe.name) == name.lower(),
+                Recipe.account_id.in_([acc.id for acc in current_user.accounts])
+            ).first():
+                error_msg = f"A recipe named '{name}' already exists in your account. Please choose a different name."
+                if request.is_json:
+                    return jsonify({
+                        'success': False,
+                        'message': error_msg
+                    }), 400
+                flash(error_msg, "warning")
                 errors = True
 
             if errors:
-                # Return template with errors and repopulated data
-                return render_template('add_recipe.html', current_data=request.form)
+                if request.is_json:
+                    return jsonify({
+                        'success': False,
+                        'message': 'Please correct the errors in the form.'
+                    }), 400
+                return render_template('add_recipe_V1.html',
+                                   form_ingredients=form_ingredients,
+                                   ingredients_data=ingredients_data,
+                                   all_ingredients=all_ingredients,
+                                   distinct_aisles=distinct_aisles,
+                                   name=name,
+                                   source_link=source_link or '',
+                                   servings=servings_str,
+                                   method=method,
+                                   is_breakfast=is_breakfast,
+                                   is_lunch=is_lunch,
+                                   is_dinner=is_dinner)
 
-            # --- Create Recipe ---
+            # --- Save the recipe ---
+            # Get the first account the user is associated with
+            account_id = current_user.accounts.first().id if current_user.accounts.first() else None
+            
+            # Create new recipe
             new_recipe = Recipe(
                 name=name,
-                source_link=source_link,
                 method=method,
-                servings=servings_int, # Already validated as positive int
+                servings=servings_int,
+                source_link=source_link,
                 is_breakfast=is_breakfast,
                 is_lunch=is_lunch,
-                is_dinner=is_dinner
+                is_dinner=is_dinner,
+                account_id=account_id,
+                created_by=current_user.id
             )
+            
             db.session.add(new_recipe)
-            # Flush session to get the new_recipe.id assigned by the database,
-            # needed for linking ingredients *before* the commit.
-            db.session.flush()
-
-            # --- Process Ingredients ---
-            ingredients_to_add = []
-            has_valid_ingredient = False
-            # Pre-fetch known aisles for efficiency if there are many ingredients
-            all_ingredient_aisles = db.session.query(Ingredient.name, Ingredient.aisle)\
-                                              .filter(Ingredient.aisle.isnot(None), Ingredient.aisle != '')\
-                                              .distinct().all()
-            known_aisles_cache = { ing_name.strip().lower(): aisle
-                                   for ing_name, aisle in all_ingredient_aisles if aisle }
-
-            for line in ingredients_raw.splitlines(): # Use splitlines() handles different line endings
-                line = line.strip()
-                if not line:
-                    continue # Skip empty lines
-
-                # Split line into parts based on '-'
-                parts = [p.strip() for p in line.split('-', 2)]
-                ing_name = parts[0]
-                if not ing_name:
-                    continue # Skip lines that might start with '-' or are just whitespace
-
-                # Assign quantity and unit, defaulting to None if not provided
-                ing_qty = parts[1] if len(parts) > 1 and parts[1] else None
-                ing_unit = parts[2] if len(parts) > 2 and parts[2] else None
-
-                # Attempt to find existing aisle for this ingredient name (case-insensitive)
-                ing_name_lower = ing_name.lower()
-                aisle = known_aisles_cache.get(ing_name_lower) # Use cache
-
-                ingredients_to_add.append(Ingredient(
-                    name=ing_name,
-                    quantity=ing_qty,
-                    unit=ing_unit,
-                    aisle=aisle,
-                    recipe_id=new_recipe.id # Link to the flushed recipe ID
-                ))
-                has_valid_ingredient = True
-
-            if not has_valid_ingredient:
-                # If no valid ingredients were parsed, rollback the recipe addition
-                db.session.rollback()
-                flash("No valid ingredients found. Each line should be 'Name - Quantity - Unit' (Quantity and Unit are optional). Recipe not added.", "danger")
-                return render_template('add_recipe.html', current_data=request.form)
-
-            # Add all valid ingredients to the session
-            db.session.add_all(ingredients_to_add)
-            # Commit the recipe and its ingredients together
+            db.session.flush()  # This will assign an ID to new_recipe without committing
+            
+            # Process ingredients
+            for i in range(len(ingredient_ids)):
+                ing_id = ingredient_ids[i] if i < len(ingredient_ids) else ''
+                qty = ingredient_quantities[i] if i < len(ingredient_quantities) else ''
+                unit = ingredient_units[i] if i < len(ingredient_units) else ''
+                aisle = ingredient_aisles[i] if i < len(ingredient_aisles) else ''
+                ing_name = ingredient_names[i] if i < len(ingredient_names) else ''
+                
+                # Skip if no ingredient ID or name
+                if not ing_id and not ing_name:
+                    continue
+                    
+                # If we have an ingredient ID, use it
+                if ing_id and ing_id.strip():
+                    ingredient = Ingredient.query.get(ing_id)
+                    if not ingredient:
+                        # If ingredient doesn't exist, skip or create a new one
+                        continue
+                else:
+                    # Create a new ingredient
+                    # First, find or create the aisle
+                    aisle_obj = Aisle.query.filter_by(name=aisle).first()
+                    if not aisle_obj and aisle:
+                        aisle_obj = Aisle(name=aisle)
+                        db.session.add(aisle_obj)
+                        db.session.flush()
+                    
+                    # Create the ingredient
+                    ingredient = Ingredient(
+                        name=ing_name,
+                        unit=unit or 'unit',
+                        aisle_id=aisle_obj.id if aisle_obj else None
+                    )
+                    db.session.add(ingredient)
+                    db.session.flush()
+                
+                # Add recipe ingredient
+                if ingredient:
+                    recipe_ingredient = RecipeIngredient(
+                        recipe_id=new_recipe.id,
+                        ingredient_id=ingredient.id,
+                        quantity=str(qty) if qty else '1'
+                    )
+                    db.session.add(recipe_ingredient)
+            
+            # Commit all changes
             db.session.commit()
-            flash(f"Recipe '{new_recipe.name}' added successfully.", "success")
+            
+            if request.is_json:
+                return jsonify({
+                    'success': True,
+                    'message': 'Recipe added successfully!',
+                    'redirect': url_for('dashboard')
+                })
+                
+            flash('Recipe added successfully!', 'success')
             return redirect(url_for('dashboard'))
+            
+        except Exception as e:
+            db.session.rollback()
+            error_msg = f'Error saving recipe: {str(e)}'
+            print(error_msg)  # Log the error
+            
+            if request.is_json:
+                return jsonify({
+                    'success': False,
+                    'message': error_msg
+                }), 500
+            
+            flash(error_msg, 'danger')
+            return render_template('add_recipe_V1.html',
+                               form_ingredients=form_ingredients,
+                               ingredients_data=ingredients_data,
+                               all_ingredients=all_ingredients,
+                               distinct_aisles=distinct_aisles,
+                               name=request.form.get('name', ''),
+                               source_link=request.form.get('source_link', ''),
+                               servings=request.form.get('servings', ''),
+                               method=request.form.get('method', ''),
+                               is_breakfast='is_breakfast' in request.form,
+                               is_lunch='is_lunch' in request.form,
+                               is_dinner='is_dinner' in request.form)
+
+            # Start a transaction
+            try:
+                # --- Create Recipe ---
+                new_recipe = Recipe(
+                    name=name,
+                    source_link=source_link,
+                    method=method,
+                    servings=servings_int,
+                    is_breakfast=is_breakfast,
+                    is_lunch=is_lunch,
+                    is_dinner=is_dinner,
+                    account_id=current_user.accounts[0].id,  # Use the first account
+                    created_by=current_user.id
+                )
+                db.session.add(new_recipe)
+                db.session.flush()  # Get the new_recipe.id
+
+                # --- Process Ingredients ---
+                for ing_data in ingredients:
+                    # Find or create ingredient
+                    if ing_data['id'] and ing_data['id'].isdigit():
+                        # Existing ingredient
+                        ingredient = Ingredient.query.get(int(ing_data['id']))
+                        if not ingredient:
+                            raise ValueError(f"Ingredient with ID {ing_data['id']} not found")
+                    else:
+                        # New ingredient - find or create
+                        ingredient = Ingredient.query.filter(
+                            func.lower(Ingredient.name) == ing_data['name'].lower()
+                        ).first()
+                        
+                        if not ingredient:
+                            # Create new aisle if needed
+                            aisle = None
+                            if ing_data['aisle']:
+                                aisle = Aisle.query.filter(
+                                    func.lower(Aisle.name) == ing_data['aisle'].lower()
+                                ).first()
+                                
+                                if not aisle:
+                                    aisle = Aisle(name=ing_data['aisle'])
+                                    db.session.add(aisle)
+                                    db.session.flush()
+                            
+                            # Create new ingredient
+                            ingredient = Ingredient(
+                                name=ing_data['name'],
+                                unit=ing_data['unit'] or 'unit',
+                                aisle_id=aisle.id if aisle else None
+                            )
+                            db.session.add(ingredient)
+                            db.session.flush()
+                    
+                    # Create recipe ingredient
+                    recipe_ingredient = RecipeIngredient(
+                        recipe_id=new_recipe.id,
+                        ingredient_id=ingredient.id,
+                        quantity=str(ing_data['quantity'])
+                    )
+                    db.session.add(recipe_ingredient)
+                
+                # Commit all changes
+                db.session.commit()
+                flash('Recipe added successfully!', 'success')
+                return redirect(url_for('view_recipe', recipe_id=new_recipe.id))
+                
+            except Exception as e:
+                db.session.rollback()
+                app.logger.error(f'Error adding recipe: {str(e)}', exc_info=True)
+                flash(f'An error occurred while adding the recipe: {str(e)}', 'danger')
+                
+                # Reconstruct form data for repopulation using the ingredients list we built
+                form_ingredients = []
+                for ing in ingredients:
+                    form_ingredients.append({
+                        'id': ing['id'],
+                        'name': ing['name'],
+                        'quantity': ing['quantity'],
+                        'unit': ing['unit'],
+                        'aisle': ing['aisle']
+                    })
+                
+                # Add empty row if no ingredients yet
+                if not form_ingredients:
+                    form_ingredients.append({
+                        'id': '',
+                        'name': '',
+                        'quantity': '',
+                        'unit': '',
+                        'aisle': ''
+                    })
+                
+                return render_template('add_recipe_V1.html',
+                                   form_ingredients=form_ingredients,
+                                   all_ingredients=all_ingredients,
+                                   distinct_aisles=distinct_aisles,
+                                   name=name,
+                                   source_link=source_link or '',
+                                   servings=servings_str,
+                                   method=method,
+                                   is_breakfast=is_breakfast,
+                                   is_lunch=is_lunch,
+                                   is_dinner=is_dinner)
 
         except Exception as e:
-            db.session.rollback() # Rollback any partial changes on unexpected error
-            flash(f"An unexpected error occurred while adding the recipe: {e}", "danger")
-            app.logger.error(f"Error adding recipe: {e}", exc_info=True) # Log detailed error
-            # Return template with potentially repopulated data
-            return render_template('add_recipe.html', current_data=request.form)
+            db.session.rollback()
+            app.logger.error(f'Error in add_recipe: {str(e)}', exc_info=True)
+            flash(f'An error occurred while processing your request: {str(e)}', 'danger')
+            
+            # Reconstruct form data for repopulation using the ingredients list we built
+            form_ingredients = []
+            if 'ingredients' in locals():
+                for ing in ingredients:
+                    form_ingredients.append({
+                        'id': ing.get('id', ''),
+                        'name': ing.get('name', ''),
+                        'quantity': ing.get('quantity', ''),
+                        'unit': ing.get('unit', ''),
+                        'aisle': ing.get('aisle', '')
+                    })
+            
+            # Add empty row if no ingredients yet
+            if not form_ingredients:
+                form_ingredients.append({
+                    'id': '',
+                    'name': '',
+                    'quantity': '',
+                    'unit': '',
+                    'aisle': ''
+                })
+            
+            return render_template('add_recipe_V1.html',
+                               form_ingredients=form_ingredients,
+                               all_ingredients=all_ingredients,
+                               distinct_aisles=distinct_aisles,
+                               name=name,
+                               source_link=source_link or '',
+                               servings=servings_str,
+                               method=method,
+                               is_breakfast=is_breakfast,
+                               is_lunch=is_lunch,
+                               is_dinner=is_dinner)
 
     # --- GET Request ---
-    return render_template('add_recipe.html', current_data={})
-
-
-@app.route('/edit_recipe/<int:recipe_id>', methods=['GET', 'POST'])
-def edit_recipe(recipe_id: int):
-    # Fetch the recipe or return 404. Eagerly load ingredients.
-    recipe = Recipe.query.options(joinedload(Recipe.ingredients)).get_or_404(recipe_id)
-    distinct_aisles = get_distinct_aisles() # For aisle dropdowns
-
-    # Helper function to reconstruct ingredient data from form for repopulation on error
-    def get_submitted_ingredients(form_data) -> List[Dict[str, Any]]:
-         submitted = []
-         ids = form_data.getlist('ingredient_id[]')
-         names = form_data.getlist('ingredient_name[]')
-         qtys = form_data.getlist('ingredient_qty[]')
-         units = form_data.getlist('ingredient_unit[]')
-         aisles = form_data.getlist('ingredient_aisle[]')
-
-         max_len = max(len(ids), len(names), len(qtys), len(units), len(aisles))
-
-         for i in range(max_len):
-             name = names[i].strip() if i < len(names) else ''
-             # Include row even if name is empty, to preserve structure on error page
-             # Validation will catch empty required names later
-             submitted.append({
-                 'id': ids[i].strip() if i < len(ids) else '',
-                 'name': name,
-                 'quantity': qtys[i].strip() if i < len(qtys) else '',
-                 'unit': units[i].strip() if i < len(units) else '',
-                 # Handle 'None' string from dropdown or empty string
-                 'aisle': aisles[i].strip() if i < len(aisles) and aisles[i].strip() and aisles[i] != 'None' else None
-             })
-         # Ensure at least one empty row if everything was deleted
-         if not submitted:
-             submitted.append({'id': '', 'name': '', 'quantity': '', 'unit': '', 'aisle': None})
-         return submitted
-
-    if request.method == 'POST':
-        form_ingredients = [] # Initialize in case of early exit before assignment
-        try:
-            original_name = recipe.name
-            name = request.form.get('name', '').strip()
-            method = request.form.get('method', '').strip()
-            servings_str = request.form.get('servings', '').strip()
-            source_link = request.form.get('source_link', '').strip() or None
-            is_breakfast = 'is_breakfast' in request.form
-            is_lunch = 'is_lunch' in request.form
-            is_dinner = 'is_dinner' in request.form
-
-            # Get ingredient lists from the form
-            ingredient_ids = request.form.getlist('ingredient_id[]')
-            ingredient_names = request.form.getlist('ingredient_name[]')
-            ingredient_qtys = request.form.getlist('ingredient_qty[]')
-            ingredient_units = request.form.getlist('ingredient_unit[]')
-            ingredient_aisles = request.form.getlist('ingredient_aisle[]')
-
-            # --- Validation ---
-            errors = False
-            if not name:
-                flash("Recipe name is required.", "danger")
-                errors = True
-            if not servings_str:
-                flash("Servings is required.", "danger")
-                errors = True
-            # Check if at least one non-empty ingredient name was submitted
-            if not any(n.strip() for n in ingredient_names):
-                flash("At least one ingredient name is required.", "danger")
-                errors = True
-
-            servings_int = None
-            if servings_str:
-                try:
-                    servings_int = int(servings_str)
-                    if servings_int <= 0:
-                        flash("Servings must be a positive whole number.", "danger")
-                        errors = True
-                except ValueError:
-                    flash("Servings must be a valid whole number.", "danger")
-                    errors = True
-
-            # Check for duplicate name only if the name has changed (case-insensitive)
-            if name and name.lower() != original_name.lower():
-                if Recipe.query.filter(
-                    func.lower(Recipe.name) == name.lower(),
-                    Recipe.id != recipe_id # Exclude self
-                ).first():
-                    flash(f"Another recipe named '{name}' already exists.", "warning")
-                    errors = True
-
-            if errors:
-                # Reconstruct form state for template
-                form_ingredients = get_submitted_ingredients(request.form)
-                return render_template('edit_recipe.html', recipe=recipe, form_ingredients=form_ingredients, distinct_aisles=distinct_aisles)
-
-            # --- Update Recipe Fields ---
-            recipe.name = name
-            recipe.source_link = source_link
-            recipe.method = method
-            recipe.servings = servings_int # Validated int
-            recipe.is_breakfast = is_breakfast
-            recipe.is_lunch = is_lunch
-            recipe.is_dinner = is_dinner
-
-            # --- Update Ingredients ---
-            # Efficiently track changes using sets and dictionaries
-            existing_ingredient_ids: Set[int] = {ing.id for ing in recipe.ingredients}
-            submitted_ingredient_ids: Set[int] = set()
-            ingredients_to_add: List[Ingredient] = []
-            ingredients_to_update: Dict[int, Dict[str, Any]] = {} # {ing_id: {data}}
-
-            # Iterate through submitted ingredient data
-            max_len = max(len(ingredient_ids), len(ingredient_names), len(ingredient_qtys), len(ingredient_units), len(ingredient_aisles))
-            for i in range(max_len):
-                name_val = ingredient_names[i].strip() if i < len(ingredient_names) else ''
-                # Skip rows where the name is empty (usually indicates deletion or empty new row)
-                if not name_val:
-                    continue
-
-                current_id: Optional[int] = None
-                try:
-                    current_id_str = ingredient_ids[i].strip() if i < len(ingredient_ids) else ''
-                    if current_id_str.isdigit():
-                        current_id = int(current_id_str)
-                except IndexError:
-                    current_id = None # Should not happen with max_len, but safe check
-
-                # Get other fields safely
-                qty_val = ingredient_qtys[i].strip() if i < len(ingredient_qtys) and ingredient_qtys[i].strip() else None
-                unit_val = ingredient_units[i].strip() if i < len(ingredient_units) and ingredient_units[i].strip() else None
-                aisle_val = ingredient_aisles[i].strip() if i < len(ingredient_aisles) and ingredient_aisles[i].strip() and ingredient_aisles[i] != 'None' else None
-
-                data = {
-                    'name': name_val,
-                    'quantity': qty_val,
-                    'unit': unit_val,
-                    'aisle': aisle_val,
-                    'recipe_id': recipe.id # Link to parent recipe
-                }
-
-                # Check if it's an existing ingredient being updated
-                if current_id and current_id in existing_ingredient_ids:
-                    submitted_ingredient_ids.add(current_id)
-                    ingredients_to_update[current_id] = data
-                # Check if it's a new ingredient (no ID or ID not in existing set)
-                # We only add if the name is non-empty (checked earlier)
-                elif not current_id or current_id not in existing_ingredient_ids:
-                     # Create a new Ingredient object, don't include 'id'
-                     ingredients_to_add.append(Ingredient(**data))
-
-            # --- Process Deletions ---
-            ids_to_delete = existing_ingredient_ids - submitted_ingredient_ids
-            if ids_to_delete:
-                # Delete ingredients that were present before but not submitted now
-                # Using synchronize_session='fetch' might be okay for smaller deletes
-                # For large deletes, 'fetch' can be slow; 'evaluate' might be faster but requires caution.
-                Ingredient.query.filter(Ingredient.id.in_(ids_to_delete)).delete(synchronize_session='fetch')
-
-            # --- Process Updates ---
-            for ing_id, data in ingredients_to_update.items():
-                 # Fetch the specific ingredient to update
-                 ing = db.session.get(Ingredient, ing_id)
-                 if ing: # Ensure it still exists
-                     ing.name = data['name']
-                     ing.quantity = data['quantity']
-                     ing.unit = data['unit']
-                     ing.aisle = data['aisle']
-                 else:
-                     app.logger.warning(f"Ingredient ID {ing_id} marked for update but not found in session/DB.")
-
-
-            # --- Process Additions ---
-            if ingredients_to_add:
-                db.session.add_all(ingredients_to_add)
-
-            # --- Commit Changes ---
-            db.session.commit()
-            flash(f"Recipe '{recipe.name}' updated successfully.", "success")
-            # Clear potentially stale shopping list
-            session.pop('shopping_list_state', None)
-            return redirect(url_for('dashboard'))
-
-        except Exception as e:
-             db.session.rollback() # Rollback on any error during processing
-             flash(f"An unexpected error occurred while updating the recipe: {e}", "danger")
-             app.logger.error(f"Error updating recipe {recipe_id}: {e}", exc_info=True)
-             # Reconstruct form state for template on error
-             form_ingredients = get_submitted_ingredients(request.form)
-             return render_template('edit_recipe.html', recipe=recipe, form_ingredients=form_ingredients, distinct_aisles=distinct_aisles)
-
-    else: # --- GET Request ---
-        # Populate form_ingredients from the loaded recipe's ingredients
-        form_ingredients = [
-            {'id': ing.id, 'name': ing.name, 'quantity': ing.quantity or '', 'unit': ing.unit or '', 'aisle': ing.aisle}
-            for ing in recipe.ingredients
-        ]
-        # Ensure at least one (potentially empty) row for the template's add functionality
-        if not form_ingredients:
-            form_ingredients.append({'id': '', 'name': '', 'quantity': '', 'unit': '', 'aisle': None})
-
-    return render_template('edit_recipe.html', recipe=recipe, form_ingredients=form_ingredients, distinct_aisles=distinct_aisles)
+    # For a new recipe, start with one empty ingredient row
+    form_ingredients = [{
+        'id': '',
+        'name': '',
+        'quantity': '',
+        'unit': '',
+        'aisle': ''
+    }]
+    
+    # Convert all_ingredients to the format expected by the frontend
+    ingredients_data = []
+    if all_ingredients:
+        ingredients_data = [{
+            'id': ing.get('id', ''),
+            'name': ing.get('name', ''),
+            'unit': ing.get('unit', ''),
+            'aisle': ing.get('aisle', '')
+        } for ing in all_ingredients]
+    
+    # Debug logging
+    print("\n=== DEBUG: Ingredients Data ===")
+    print(f"Number of ingredients: {len(ingredients_data)}")
+    if ingredients_data:
+        print("Sample ingredients:", ingredients_data[:3])
+    print("\n=== DEBUG: Distinct Aisles ===")
+    print(distinct_aisles)
+    print("=" * 30 + "\n")
+    
+    return render_template('add_recipe_V1.html',
+                         form_ingredients=form_ingredients,
+                         ingredients_data=ingredients_data,
+                         all_ingredients=all_ingredients,
+                         distinct_aisles=distinct_aisles,
+                         name='',
+                         source_link='',
+                         servings='',
+                         method='',
+                         is_breakfast=False,
+                         is_lunch=False,
+                         is_dinner=False)
 
 
 @app.route('/view_recipe/<int:recipe_id>')
 def view_recipe(recipe_id: int):
     # Use get_or_404 for robust fetching by ID
-    recipe = Recipe.query.options(joinedload(Recipe.ingredients)).get_or_404(recipe_id)
+    recipe = Recipe.query.options(
+        joinedload(Recipe.recipe_ingredients)
+        .joinedload(RecipeIngredient.ingredient)
+        .joinedload(Ingredient.aisle)
+    ).get_or_404(recipe_id)
     return render_template('view_recipe.html', recipe=recipe)
+
+@app.route('/edit_recipe/<int:recipe_id>', methods=['GET', 'POST'])
+@login_required
+def edit_recipe(recipe_id: int):
+    """Edit an existing recipe."""
+    # Get all ingredients for autocomplete
+    all_ingredients = [{
+        'id': ing.id,
+        'name': ing.name,
+        'unit': ing.unit or 'unit',
+        'aisle': ing.aisle.name if ing.aisle else 'Misc'
+    } for ing in Ingredient.query.options(joinedload(Ingredient.aisle)).all()]
+    
+    # Get the recipe with its ingredients
+    recipe = Recipe.query.options(
+        joinedload(Recipe.recipe_ingredients).joinedload(RecipeIngredient.ingredient)
+    ).get_or_404(recipe_id)
+    
+    # Check if user has permission to edit this recipe
+    if not current_user.is_admin and (not recipe.account_id or 
+                                    not any(acc.id == recipe.account_id for acc in current_user.accounts)):
+        flash("You don't have permission to edit this recipe.", "danger")
+        return redirect(url_for('dashboard'))
+    
+    # Get distinct aisles for the ingredient modal
+    distinct_aisles = get_distinct_aisles()
+    
+    if request.method == 'POST':
+        # Get form data
+        name = request.form.get('name', '').strip()
+        source_link = request.form.get('source_link', '').strip()
+        servings = request.form.get('servings', '1').strip()
+        method = request.form.get('method', '').strip()
+        is_breakfast = 'is_breakfast' in request.form
+        is_lunch = 'is_lunch' in request.form
+        is_dinner = 'is_dinner' in request.form
+        
+        # Get ingredient data
+        ingredient_ids = request.form.getlist('ingredient_ids[]')
+        ingredient_quantities = request.form.getlist('ingredient_quantities[]')
+        ingredient_units = request.form.getlist('ingredient_units[]')
+        ingredient_aisles = request.form.getlist('ingredient_aisles[]')
+        ingredient_names = request.form.getlist('ingredient_names[]')
+        
+        # Validate form data
+        errors = False
+        
+        # Validate recipe name
+        if not name:
+            flash('Recipe name is required.', 'danger')
+            errors = True
+        else:
+            # Check for duplicate recipe name (case-insensitive, excluding current recipe)
+            existing_recipe = Recipe.query.filter(
+                func.lower(Recipe.name) == func.lower(name),
+                Recipe.id != recipe_id,
+                Recipe.account_id.in_([acc.id for acc in current_user.accounts])
+            ).first()
+            if existing_recipe:
+                flash('A recipe with this name already exists in your account.', 'danger')
+                errors = True
+        
+        # Validate servings
+        try:
+            servings_int = int(servings)
+            if servings_int < 1:
+                flash('Servings must be at least 1.', 'danger')
+                errors = True
+        except (ValueError, TypeError):
+            flash('Invalid number of servings.', 'danger')
+            errors = True
+        
+        # Validate at least one meal type is selected
+        if not (is_breakfast or is_lunch or is_dinner):
+            flash('Please select at least one meal type.', 'danger')
+            errors = True
+        
+        # Validate ingredients
+        ingredients = []
+        for i in range(max(len(ingredient_ids), len(ingredient_names))):
+            ing_id = ingredient_ids[i] if i < len(ingredient_ids) else ''
+            qty = ingredient_quantities[i] if i < len(ingredient_quantities) else ''
+            unit = ingredient_units[i] if i < len(ingredient_units) else ''
+            aisle = ingredient_aisles[i] if i < len(ingredient_aisles) else ''
+            ing_name = ingredient_names[i] if i < len(ingredient_names) else ''
+
+            # Skip empty rows
+            if not (ing_id.strip() or ing_name.strip()):
+                continue
+
+            # Validate quantity
+            try:
+                qty_float = float(qty) if qty else 0.0
+                if qty_float <= 0:
+                    flash("Quantity must be a positive number.", "danger")
+                    errors = True
+                    break
+            except ValueError:
+                flash(f"Invalid quantity for ingredient: {ing_name or 'Unknown'}", "danger")
+                errors = True
+                break
+
+            ingredients.append({
+                'id': ing_id,
+                'name': ing_name,
+                'quantity': qty,
+                'unit': unit,
+                'aisle': aisle
+            })
+
+        if not ingredients:
+            flash("At least one valid ingredient is required.", "danger")
+            errors = True
+        
+        # If there are validation errors, re-render the form with the entered data
+        if errors:
+            return render_template('edit_recipe_v1.html', 
+                                recipe=recipe,
+                                form_ingredients=ingredients or [{'id': '', 'name': '', 'quantity': '', 'unit': '', 'aisle': ''}],
+                                all_ingredients=all_ingredients,
+                                distinct_aisles=distinct_aisles,
+                                name=name,
+                                source_link=source_link,
+                                servings=servings,
+                                method=method,
+                                is_breakfast=is_breakfast,
+                                is_lunch=is_lunch,
+                                is_dinner=is_dinner)
+        
+        # Update recipe details in a transaction
+        try:
+            recipe.name = name
+            recipe.source_link = source_link or None
+            recipe.servings = servings_int
+            recipe.method = method or None
+            recipe.is_breakfast = is_breakfast
+            recipe.is_lunch = is_lunch
+            recipe.is_dinner = is_dinner
+            
+            # Update recipe ingredients
+            # First, delete existing recipe ingredients
+            RecipeIngredient.query.filter_by(recipe_id=recipe.id).delete()
+            
+            # Process each ingredient
+            for ing_data in ingredients:
+                # Find or create ingredient
+                if ing_data['id'] and ing_data['id'].isdigit():
+                    # Existing ingredient
+                    ingredient = Ingredient.query.get(int(ing_data['id']))
+                    if not ingredient:
+                        raise ValueError(f"Ingredient with ID {ing_data['id']} not found")
+                else:
+                    # New ingredient - find or create
+                    ingredient = Ingredient.query.filter(
+                        func.lower(Ingredient.name) == ing_data['name'].lower()
+                    ).first()
+                    
+                    if not ingredient:
+                        # Create new aisle if needed
+                        aisle = None
+                        if ing_data['aisle']:
+                            aisle = Aisle.query.filter(
+                                func.lower(Aisle.name) == ing_data['aisle'].lower()
+                            ).first()
+                            
+                            if not aisle:
+                                aisle = Aisle(name=ing_data['aisle'])
+                                db.session.add(aisle)
+                                db.session.flush()
+                        
+                        # Create new ingredient
+                        ingredient = Ingredient(
+                            name=ing_data['name'],
+                            unit=ing_data['unit'] or 'unit',
+                            aisle_id=aisle.id if aisle else None
+                        )
+                        db.session.add(ingredient)
+                        db.session.flush()
+                
+                # Create recipe ingredient
+                recipe_ingredient = RecipeIngredient(
+                    recipe_id=recipe.id,
+                    ingredient_id=ingredient.id,
+                    quantity=str(ing_data['quantity'])
+                )
+                db.session.add(recipe_ingredient)
+            
+            db.session.commit()
+            flash('Recipe updated successfully!', 'success')
+            return redirect(url_for('view_recipe', recipe_id=recipe.id))
+            
+        except Exception as e:
+            db.session.rollback()
+            app.logger.error(f'Error updating recipe: {str(e)}', exc_info=True)
+            flash(f'An error occurred while updating the recipe: {str(e)}', 'danger')
+            
+            # Re-render form with current data on error
+            return render_template('edit_recipe_v1.html', 
+                                recipe=recipe,
+                                form_ingredients=ingredients or [{'id': '', 'name': '', 'quantity': '', 'unit': '', 'aisle': ''}],
+                                all_ingredients=all_ingredients,
+                                distinct_aisles=distinct_aisles,
+                                name=name,
+                                source_link=source_link,
+                                servings=servings,
+                                method=method,
+                                is_breakfast=is_breakfast,
+                                is_lunch=is_lunch,
+                                is_dinner=is_dinner)
+    
+    # For GET request, show the edit form with current recipe data
+    # Prepare form data for the template
+    form_ingredients = []
+    for ri in recipe.recipe_ingredients:
+        form_ingredients.append({
+            'id': ri.ingredient.id,
+            'name': ri.ingredient.name,
+            'quantity': ri.quantity,
+            'unit': ri.ingredient.unit or '',
+            'aisle': ri.ingredient.aisle.name if ri.ingredient.aisle else ''
+        })
+    
+    # If no ingredients, add one empty row
+    if not form_ingredients:
+        form_ingredients.append({'id': '', 'name': '', 'quantity': '', 'unit': '', 'aisle': ''})
+    
+    return render_template('edit_recipe_v1.html', 
+                         recipe=recipe,
+                         form_ingredients=form_ingredients,
+                         all_ingredients=all_ingredients,
+                         distinct_aisles=distinct_aisles,
+                         name=recipe.name,
+                         source_link=recipe.source_link or '',
+                         servings=recipe.servings,
+                         method=recipe.method or '',
+                         is_breakfast=recipe.is_breakfast,
+                         is_lunch=recipe.is_lunch,
+                         is_dinner=recipe.is_dinner)
 
 @app.route('/delete_recipe/<int:recipe_id>', methods=['POST'])
 def delete_recipe(recipe_id: int):
@@ -1733,12 +2248,17 @@ def update_shopping_list_aisles(ingredient_name: str, new_aisle: Optional[str]) 
         synchronize_session=False
     )
 
-@app.route('/manage_aisles', methods=['GET', 'POST'])
+# The add_ingredient_api function is defined earlier in the file (around line 1220)
+
+@app.route('/manage_ingredients', methods=['GET', 'POST'])
 @login_required
-def manage_aisles():
+def manage_ingredients():
+    # Initialize ingredients list
+    ingredients = []
+    
     # Get distinct aisles for dropdown options
     distinct_aisles = get_distinct_aisles()
-
+    
     if request.method == 'POST':
         try:
             # Start a transaction
@@ -1749,89 +2269,175 @@ def manage_aisles():
             
             # Process updates in batches
             updates = []
+            new_ingredients = []
+            
+            # Handle existing ingredient updates
             for key, value in form_data.items():
-                if key.startswith('aisle_'):
-                    ingredient_name = key[6:]  # Remove 'aisle_' prefix
-                    original_aisle = form_data.get(f'original_aisle_{ingredient_name}')
+                if key.startswith('ingredient_'):
+                    # Format is 'ingredient_[id]_[field]'
+                    parts = key.split('_')
+                    if len(parts) != 3:
+                        continue
+                        
+                    ing_id = int(parts[1])
+                    field = parts[2]
                     
-                    # Only update if the value has changed
-                    if value != original_aisle:
-                        updates.append({
-                            'name': ingredient_name,
-                            'new_aisle': value if value else None
-                        })
+                    # Find or create update entry for this ingredient
+                    update = next((u for u in updates if u['id'] == ing_id), None)
+                    if not update:
+                        update = {'id': ing_id}
+                        updates.append(update)
+                    
+                    # Store the field value, ensuring unit is never None
+                    if field == 'unit' and (value == '' or value is None):
+                        update[field] = 'unit'  # Default value
+                    else:
+                        update[field] = value if value != '' else None
             
-            if not updates:
-                flash('No changes were made to aisle assignments.', 'info')
-                return redirect(url_for('manage_aisles'))
+            # Handle new ingredient
+            new_name = request.form.get('new_ingredient_name', '').strip()
+            new_aisle = request.form.get('new_ingredient_aisle', '').strip() or None
             
-            # Perform bulk updates
+            if new_name:
+                # Check if ingredient already exists
+                existing = Ingredient.query.filter(
+                    or_(
+                        func.lower(Ingredient.name) == new_name.lower(),
+                        func.lower(Ingredient.name) == new_name.lower() + 's',
+                        func.lower(Ingredient.name) == new_name.lower()[:-1] if new_name.endswith('s') else None
+                    )
+                ).first()
+                
+                if existing:
+                    flash(f'Ingredient similar to "{new_name}" already exists as "{existing.name}"', 'warning')
+                else:
+                    new_ingredients.append({
+                        'name': new_name,
+                        'aisle': new_aisle
+                    })
+            
+            # Process updates for existing ingredients
             for update in updates:
-                # Update Ingredients table
-                Ingredient.query.filter(
-                    Ingredient.name.ilike(update['name'])
-                ).update(
-                    {
-                        'aisle': update['new_aisle'],
-                        'updated_at': datetime.utcnow()
-                    },
-                    synchronize_session=False
-                )
+                ingredient = Ingredient.query.get(update['id'])
+                if not ingredient:
+                    continue
+                    
+                # Update name if changed
+                if 'name' in update and update['name'] != ingredient.name:
+                    # Check if new name already exists
+                    existing = Ingredient.query.filter(
+                        Ingredient.name.ilike(update['name']),
+                        Ingredient.id != ingredient.id
+                    ).first()
+                    if existing:
+                        flash(f'Ingredient "{update['name']}" already exists. Skipping update.', 'warning')
+                        continue
+                    ingredient.name = update['name']
                 
-                # Update PantryItems table
-                PantryItem.query.filter(
-                    PantryItem.name.ilike(update['name'])
-                ).update(
-                    {'aisle': update['new_aisle']},
-                    synchronize_session=False
-                )
+                # Update unit if changed, ensuring it's never None
+                if 'unit' in update:
+                    new_unit = update['unit'] or 'unit'  # Default to 'unit' if empty or None
+                    if new_unit != ingredient.unit:
+                        ingredient.unit = new_unit
                 
-                # Update ShoppingListItem table
-                ShoppingListItem.query.filter(
-                    func.lower(ShoppingListItem.name) == func.lower(update['name'])
-                ).update(
-                    {
-                        'aisle': update['new_aisle'],
-                        'updated_at': datetime.utcnow()
-                    },
-                    synchronize_session=False
-                )
+                # Update aisle if changed
+                if 'aisle' in update and update['aisle'] != ingredient.aisle_id:
+                    # Find or create aisle
+                    if update['aisle']:
+                        aisle = Aisle.query.filter_by(name=update['aisle']).first()
+                        if not aisle:
+                            aisle = Aisle(name=update['aisle'])
+                            db.session.add(aisle)
+                            db.session.flush()
+                        ingredient.aisle_id = aisle.id
+                    else:
+                        ingredient.aisle_id = None
+                
+                ingredient.updated_at = datetime.utcnow()
+                
+                # Update related tables (pantry and shopping list)
+                if 'name' in update or 'aisle' in update:
+                    update_shopping_list_aisles(ingredient.name, update.get('aisle'))
             
-            # Commit the transaction
+            # Add new ingredients
+            new_ing_name = request.form.get('new_ingredient_name', '').strip()
+            new_ing_unit = request.form.get('new_ingredient_unit', '').strip()
+            new_ing_aisle = request.form.get('new_ingredient_aisle', '').strip()
+            
+            if new_ing_name:
+                # Check if ingredient already exists (case insensitive and plural forms)
+                existing = Ingredient.query.filter(
+                    or_(
+                        func.lower(Ingredient.name) == new_ing_name.lower(),
+                        func.lower(Ingredient.name) == new_ing_name.lower() + 's',
+                        func.lower(Ingredient.name) == new_ing_name.lower()[:-1] if new_ing_name.endswith('s') else None
+                    )
+                ).first()
+                
+                if existing:
+                    flash(f'Ingredient similar to "{new_ing_name}" already exists as "{existing.name}"', 'warning')
+                else:
+                    # Create new Aisle if it doesn't exist
+                    aisle = Aisle.query.filter_by(name=new_aisle).first()
+                    if not aisle:
+                        aisle = Aisle(name=new_aisle)
+                        db.session.add(aisle)
+                        db.session.commit()
+                    
+                    # Create new ingredient
+                    ingredient = Ingredient(
+                        name=new_ing_name,
+                        unit=ingredient_unit,
+                        aisle_id=aisle.id
+                    )
+                    db.session.add(ingredient)
+                    db.session.commit()
+                    flash(f'Ingredient "{new_ing_name}" added successfully!', 'success')
+            
+            # Commit the transaction if we got here
             db.session.commit()
             
-            # Flash success message with count
-            flash(f'Successfully updated {len(updates)} ingredient aisle assignments.', 'success')
-            return redirect(url_for('manage_aisles'))
         except Exception as e:
             db.session.rollback()
-            flash(f'Error updating aisle assignments: {str(e)}', 'error')
-            return redirect(url_for('manage_aisles'))
-
-    # GET request - display the form
-    try:
-        # Get distinct ingredients with their latest aisle
-        ingredients = db.session.query(
-        Ingredient.name,
-            func.max(Ingredient.aisle).label('aisle')
-        ).group_by(
-            Ingredient.name
-        ).order_by(
-            Ingredient.name
-        ).all()
+            app.logger.error(f'Error processing ingredient changes: {str(e)}')
+            flash(f'Error processing changes: {str(e)}', 'error')
         
-        # Convert to list of dicts for template
-        ingredients = [{'name': i.name, 'aisle': i.aisle} for i in ingredients]
-        
-        return render_template(
-            'manage_aisles.html',
-            ingredients=ingredients,
-            distinct_aisles=distinct_aisles
-        )
-        
-    except Exception as e:
-        flash(f'Error loading ingredients: {str(e)}', 'error')
-        return redirect(url_for('dashboard'))
+        # Get all ingredients with their aisle information
+        try:
+            ingredients = db.session.query(
+                Ingredient.id,
+                Ingredient.name,
+                Ingredient.unit,
+                Aisle.name.label('aisle_name'),
+                Aisle.id.label('aisle_id')
+            ).outerjoin(
+                Aisle, Ingredient.aisle_id == Aisle.id
+            ).order_by(
+                Ingredient.name
+            ).all()
+            
+            # Convert to list of dicts for template
+            ingredients = [{
+                'id': i.id,
+                'name': i.name, 
+                'unit': i.unit,
+                'aisle': i.aisle_name,
+                'aisle_id': i.aisle_id
+            } for i in ingredients]
+            
+        except Exception as e:
+            # Log the error for debugging
+            app.logger.error(f'Error loading ingredients: {str(e)}')
+            # Initialize empty ingredients list to prevent template errors
+            ingredients = []
+            # Show error message but still render the page
+            flash(f'Error loading ingredients: {str(e)}', 'error')
+    
+    return render_template(
+        'ingredients.html',
+        ingredients=ingredients,
+        distinct_aisles=distinct_aisles
+    )
 
 @app.route('/cupboard', methods=['GET', 'POST'])
 def cupboard():
@@ -2413,6 +3019,12 @@ def settings():
         return redirect(url_for('dashboard'))
     
     settings = account.settings
+    
+    # Get recipes for default meal selection
+    breakfast_recipes = Recipe.query.filter_by(is_breakfast=True).all()
+    lunch_recipes = Recipe.query.filter_by(is_lunch=True).all()
+    dinner_recipes = Recipe.query.filter_by(is_dinner=True).all()
+    
     if request.method == 'POST':
         try:
             # Update meal plan settings
@@ -2431,13 +3043,8 @@ def settings():
             return redirect(url_for('settings'))
         except Exception as e:
             db.session.rollback()
-            flash('Error updating settings. Please try again.', 'error')
             app.logger.error(f"Error updating settings: {str(e)}")
-    
-    # Get recipes for default meal selection
-    breakfast_recipes = Recipe.query.filter_by(is_breakfast=True).all()
-    lunch_recipes = Recipe.query.filter_by(is_lunch=True).all()
-    dinner_recipes = Recipe.query.filter_by(is_dinner=True).all()
+            flash('Error updating settings. Please try again.', 'error')
     
     return render_template('settings.html', 
                          settings=settings,
@@ -2862,36 +3469,75 @@ def handle_disconnect():
     app.logger.debug(f'[WEBSOCKET] Client disconnected: {request.sid}')
 
 @socketio.on('join_shopping_list')
+@login_required
 def on_join_shopping_list():
     """When a user opens the shopping list page"""
-    account = current_user.accounts.first()
-    if account:
+    if not current_user.is_authenticated:
+        app.logger.warning(f'[WEBSOCKET] Unauthenticated client {request.sid} attempted to join shopping list')
+        return
+        
+    try:
+        account = current_user.accounts.first()
+        if not account:
+            app.logger.warning(f'[WEBSOCKET] User {current_user.id} has no account')
+            return
+            
         room = f'shopping_list_{account.id}'
         join_room(room)
         app.logger.debug(f'[WEBSOCKET] Client {request.sid} joined room {room}')
+    except Exception as e:
+        app.logger.error(f'[WEBSOCKET] Error in on_join_shopping_list: {str(e)}', exc_info=True)
 
 @socketio.on('leave_shopping_list')
+@login_required
 def on_leave_shopping_list():
     """When a user leaves the shopping list page"""
-    account = current_user.accounts.first()
-    if account:
+    if not current_user.is_authenticated:
+        return
+        
+    try:
+        account = current_user.accounts.first()
+        if not account:
+            return
         room = f'shopping_list_{account.id}'
         leave_room(room)
         app.logger.debug(f'[WEBSOCKET] Client {request.sid} left room {room}')
+    except Exception as e:
+        app.logger.error(f'[WEBSOCKET] Error in on_leave_shopping_list: {str(e)}', exc_info=True)
+
+# --- Custom Commands ---
+@app.cli.command('set-admin')
+@click.argument('user_id')
+def set_admin(user_id):
+    """Set a user as admin."""
+    user = User.query.get(user_id)
+    if not user:
+        print(f"User with ID {user_id} not found.")
+        return
+    user.is_admin = True
+    db.session.commit()
+    print(f"User {user.email} is now an admin.")
 
 # --- Main Execution ---
 if __name__ == '__main__':
     # Create database tables if they don't exist.
     def create_tables():
         with app.app_context():
-            # Check if the database file exists before creating tables
-            # This is a simple check; migrations are better for managing changes.
-            if not os.path.exists(DATABASE_PATH):
-                print("Database file not found, creating tables...")
-                db.create_all()
-                print("Tables created.")
-            else:
-                print("Tables already exist.")
+            db.create_all()
+            # Create default admin user if no users exist
+            if not User.query.first():
+                admin = User(
+                    email='admin@example.com',
+                    name='Admin',
+                    is_admin=True
+                )
+                admin.set_password('admin123')
+                db.session.add(admin)
+                db.session.commit()
+                print("Created default admin user with email 'admin@example.com' and password 'admin123'")
+    
+    # Create tables before starting the server
+    create_tables()
     
     # Run the Flask development server with Socket.IO support
     # host='0.0.0.0' makes it accessible on your network

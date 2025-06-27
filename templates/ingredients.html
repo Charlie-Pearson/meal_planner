@@ -1,0 +1,286 @@
+<!-- meal_planner/templates/ingredients.html -->
+{% extends 'base.html' %}
+
+{% block title %}Manage Ingredients{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <h2>Manage Ingredients</h2>
+    
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+                <div class="alert alert-{{ category }}">{{ message }}</div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+    
+    <div class="card mb-4">
+        <div class="card-header">
+            <h5>Add New Ingredient</h5>
+        </div>
+        <div class="card-body">
+            <form method="POST" action="{{ url_for('manage_ingredients') }}" class="row g-3">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                
+                <div class="col-md-4">
+                    <label for="new_ingredient_name" class="form-label">Ingredient Name</label>
+                    <input type="text" class="form-control" id="new_ingredient_name" 
+                           name="new_ingredient_name" required>
+                </div>
+                
+                <div class="col-md-3">
+                    <label for="new_ingredient_unit" class="form-label">Unit</label>
+                    <input type="text" class="form-control" id="new_ingredient_unit" 
+                           name="new_ingredient_unit" placeholder="e.g., g, ml, cups" required>
+                </div>
+                
+                <div class="col-md-3">
+                    <label for="new_ingredient_aisle" class="form-label">Aisle</label>
+                    <input class="form-control" list="aisle-suggestions" 
+                           id="new_ingredient_aisle" name="new_ingredient_aisle"
+                           placeholder="Start typing to see suggestions...">
+                    <datalist id="aisle-suggestions">
+                        {% for aisle in distinct_aisles %}
+                            <option value="{{ aisle }}">
+                        {% endfor %}
+                    </datalist>
+                </div>
+                
+                <div class="col-md-2 d-flex align-items-end">
+                    <button type="submit" class="btn btn-primary">Add Ingredient</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    
+    <div class="card">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <h5 class="mb-0">Existing Ingredients</h5>
+        </div>
+        <div class="card-body">
+            <form method="POST" action="{{ url_for('manage_ingredients') }}" id="ingredients-form">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                
+                <div class="table-responsive">
+                    <table class="table table-hover" id="ingredients-table">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Ingredient</th>
+                                <th>Unit</th>
+                                <th>Aisle</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for ingredient in ingredients %}
+                            <tr data-ingredient-id="{{ ingredient.id }}">
+                                <td>
+                                    <input type="text" class="form-control" 
+                                           name="ingredient_{{ ingredient.id }}_name" 
+                                           value="{{ ingredient.name }}" required>
+                                </td>
+                                <td>
+                                    <input type="text" class="form-control" 
+                                           name="ingredient_{{ ingredient.id }}_unit" 
+                                           value="{{ ingredient.unit }}" 
+                                           placeholder="e.g., g, ml, cups">
+                                </td>
+                                <td>
+                                    <input type="text" class="form-control aisle-input" 
+                                           name="ingredient_{{ ingredient.id }}_aisle" 
+                                           value="{{ ingredient.aisle or '' }}"
+                                           list="aisle-suggestions-{{ loop.index }}">
+                                    <datalist id="aisle-suggestions-{{ loop.index }}">
+                                        {% for aisle in distinct_aisles %}
+                                            <option value="{{ aisle }}">
+                                        {% endfor %}
+                                    </datalist>
+                                </td>
+                                <td>
+                                    <button type="button" class="btn btn-sm btn-outline-danger delete-ingredient" 
+                                            data-ingredient-id="{{ ingredient.id }}" 
+                                            data-ingredient-name="{{ ingredient.name }}">
+                                        <i class="fas fa-trash"></i>
+                                    </button>
+                                </td>
+                            </tr>
+                            {% else %}
+                            <tr>
+                                <td colspan="2" class="text-center">No ingredients found.</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                
+                {% if ingredients %}
+                <div class="mt-3">
+                    <button type="submit" class="btn btn-primary d-none">Save Changes</button>
+                    <button type="reset" class="btn btn-outline-secondary">Reset</button>
+                </div>
+                {% endif %}
+            </form>
+        </div>
+    </div>
+</div>
+
+{% block scripts_extra %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Highlight changed fields
+    const form = document.getElementById('ingredients-form');
+    const inputs = form ? form.querySelectorAll('input[type="text"], input[type="number"]') : [];
+    
+    // Store original values for change detection
+    const originalValues = new Map();
+    
+    function updateInputState(input) {
+        const row = input.closest('tr');
+        if (!row) return;
+        
+        const rowId = row.dataset.ingredientId;
+        if (!rowId) return;
+        
+        const originalValue = originalValues.get(`${rowId}_${input.name.split('_').pop()}`);
+        
+        if (originalValue !== undefined && input.value !== originalValue) {
+            input.classList.add('is-valid');
+            row.classList.add('table-warning');
+        } else {
+            input.classList.remove('is-valid');
+            // Only remove warning class if no other inputs in the row are changed
+            if (!row.querySelector('.is-valid')) {
+                row.classList.remove('table-warning');
+            }
+        }
+    }
+    
+    // Initialize original values and set up change detection
+    inputs.forEach(input => {
+        if (input.name && input.name.startsWith('ingredient_')) {
+            const key = `${input.closest('tr')?.dataset.ingredientId}_${input.name.split('_').pop()}`;
+            originalValues.set(key, input.value);
+            
+            input.addEventListener('input', function() {
+                updateInputState(this);
+            });
+        }
+    });
+    
+    // Handle delete button clicks
+    document.querySelectorAll('.delete-ingredient').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const ingredientId = this.dataset.ingredientId;
+            const ingredientName = this.dataset.ingredientName;
+            
+            if (confirm(`Are you sure you want to delete "${ingredientName}"? This action cannot be undone.`)) {
+                // Add a hidden input to mark this ingredient for deletion
+                const deleteInput = document.createElement('input');
+                deleteInput.type = 'hidden';
+                deleteInput.name = `ingredient_${ingredientId}_delete`;
+                deleteInput.value = '1';
+                form.appendChild(deleteInput);
+                
+                // Hide the row
+                this.closest('tr').style.display = 'none';
+                
+                // Show save button if not already visible
+                document.querySelector('button[type="submit"]').classList.remove('d-none');
+            }
+        });
+    });
+    
+    // Add sorting to the table
+    const table = document.getElementById('ingredients-table');
+    if (table) {
+        const headers = table.querySelectorAll('th');
+        headers.forEach((header, index) => {
+            if (index >= 0 && index < 3) { // Only make first 3 columns sortable
+                header.style.cursor = 'pointer';
+                header.addEventListener('click', () => {
+                    const tbody = table.querySelector('tbody');
+                    const rows = Array.from(tbody.querySelectorAll('tr:not([style*="display: none"])'));
+                    const isAsc = header.classList.contains('asc');
+                    
+                    // Remove sort classes from all headers
+                    headers.forEach(h => h.classList.remove('asc', 'desc'));
+                    
+                    // Add sort class to clicked header
+                    header.classList.add(isAsc ? 'desc' : 'asc');
+                    
+                    // Sort rows
+                    rows.sort((a, b) => {
+                        const aValue = a.cells[index].querySelector('input')?.value || a.cells[index].textContent;
+                        const bValue = b.cells[index].querySelector('input')?.value || b.cells[index].textContent;
+                        return isAsc ? bValue.localeCompare(aValue) : aValue.localeCompare(bValue);
+                    });
+                    
+                    // Reorder rows
+                    rows.forEach(row => tbody.appendChild(row));
+                });
+            }
+        });
+    }
+    
+    // Show/hide save button when changes are made
+    form.addEventListener('input', function() {
+        const saveButton = this.querySelector('button[type="submit"]');
+        const hasChanges = Array.from(this.elements).some(el => 
+            el.classList && el.classList.contains('is-valid')
+        );
+        
+        if (hasChanges) {
+            saveButton.classList.remove('d-none');
+        } else {
+            saveButton.classList.add('d-none');
+        }
+    });
+});
+</script>
+
+<style>
+.aisle-input, .unit-input {
+    min-width: 120px;
+}
+
+input.is-valid {
+    border-color: #198754 !important;
+    background-color: rgba(25, 135, 84, 0.05) !important;
+}
+
+.table-warning {
+    background-color: rgba(255, 243, 205, 0.3) !important;
+}
+
+/* Make table cells more compact */
+.table td {
+    padding: 0.5rem;
+    vertical-align: middle;
+}
+
+/* Style the delete button */
+.delete-ingredient {
+    opacity: 0.6;
+    transition: opacity 0.2s;
+}
+
+.delete-ingredient:hover {
+    opacity: 1;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    .table-responsive {
+        font-size: 0.9rem;
+    }
+    
+    .btn-sm {
+        padding: 0.15rem 0.4rem;
+        font-size: 0.75rem;
+    }
+}
+</style>
+{% endblock %}
+
+{% endblock %}
