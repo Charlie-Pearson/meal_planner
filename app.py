@@ -812,7 +812,12 @@ def toggle_meal_lock():
 def generate_meal_plan(
     num_people: int, locked_meals: LockedMealsDict, days: Optional[List[str]] = None
 ) -> PlanIdsDict:
-    """Generate a meal plan respecting defaults, locks and leftovers."""
+    """Generate a meal plan respecting defaults, locks and leftovers.
+
+    Randomly selected recipes will not be repeated across the plan. Recipes
+    assigned via defaults or explicit locks may appear multiple times but are
+    excluded from random selection.
+    """
 
     if days is None:
         days = ALL_DAYS
@@ -834,6 +839,15 @@ def generate_meal_plan(
     }
 
     leftover_queues = {m: [] for m in meal_types}
+
+    used_recipes: Set[int] = set()
+    for rid in default_meals.values():
+        if rid:
+            used_recipes.add(int(rid))
+    for info in locked_meals.values():
+        rid = info.get("recipe_id") if isinstance(info, dict) else None
+        if rid and rid != -1:
+            used_recipes.add(int(rid))
 
     def can_fit_leftovers(extra: int, start_idx: int, m_type: str) -> bool:
         if extra <= 0:
@@ -881,7 +895,9 @@ def generate_meal_plan(
                 if lft["remaining"] == 0:
                     leftover_queues[m_type].pop(0)
             elif entry is None:
-                candidates = recipes_by_type[m_type][:]
+                candidates = [
+                    r for r in recipes_by_type[m_type] if r.id not in used_recipes
+                ]
                 random.shuffle(candidates)
                 chosen = None
                 for r in candidates:
@@ -908,6 +924,7 @@ def generate_meal_plan(
                                 "from_day": day,
                             }
                         )
+                    used_recipes.add(chosen.id)
                 else:
                     entry = None
 
