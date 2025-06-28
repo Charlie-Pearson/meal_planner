@@ -1102,22 +1102,28 @@ def dashboard():
                 # Create new meal plan entries
                 for day, meals in new_plan.items():
                     for meal_type, meal_info in meals.items():
+                        safe_meal_info = meal_info or {}
                         is_locked = locked_meals.get(f"{day}_{meal_type}", {}).get(
                             "is_locked", False
                         )
-                        is_leftover = meal_info.get("status") == "leftover"
+                        recipe_id = safe_meal_info.get("recipe_id")
+                        is_leftover = safe_meal_info.get("status") == "leftover"
                         leftover_from_day = (
-                            meal_info.get("leftover_from_day") if is_leftover else None
+                            safe_meal_info.get("leftover_from_day")
+                            if is_leftover
+                            else None
                         )
                         leftover_from_meal_type = (
-                            meal_info.get("leftover_from_meal") if is_leftover else None
+                            safe_meal_info.get("leftover_from_meal")
+                            if is_leftover
+                            else None
                         )
 
                         entry = MealPlan(
                             account_id=account.id,
                             day=day,
                             meal_type=meal_type,
-                            recipe_id=meal_info.get("recipe_id"),
+                            recipe_id=recipe_id,
                             is_locked=is_locked,
                             is_leftover=is_leftover,
                             leftover_from_day=leftover_from_day,
